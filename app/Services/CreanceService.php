@@ -182,6 +182,117 @@ class CreanceService
         });
     }
 
+    /**
+     * Soumet un paiement global (total restant ou partiel) et le répartit automatiquement
+     * sur toutes les créances impayées du client.
+     *
+     * @return array{total_restant: float, montant_soumis: float, creances_ciblees: int, transactions: array}
+     */
+    public function soumettreRemboursTotal(
+        User $client,
+        ?float $montantSoumis = null,
+        ?UploadedFile $preuve = null,
+        string $notes = '',
+        ?string $batchKey = null
+    ): array {
+        $creances = Creance::query()
+            ->where('user_id', $client->id)
+            ->whereNotIn('statut', ['payee', 'annulee'])
+            ->orderBy('created_at')
+            ->get();
+
+        if ($creances->isEmpty()) {
+            throw new \RuntimeException('Aucune créance impayée trouvée.');
+        }
+
+        $totalRestant = (float) $creances->sum('montant_restant');
+        if ($totalRestant <= 0) {
+            throw new \RuntimeException('Aucun montant restant à payer.');
+        }
+
+        $montant = $montantSoumis ?? $totalRestant;
+        if ($montant <= 0) {
+            throw new \RuntimeException('Montant invalide.');
+        }
+        if ($montant > $totalRestant) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Montant invalide. Total restant dû : %s',
+                    $this->fmtGnf($totalRestant)
+                )
+            );
+        }
+
+        $batchKey = $batchKey ?: Str::uuid()->toString();
+        $preuveInfos = $this->traiterPreuve($preuve);
+
+        $transactions = DB::transaction(function () use ($client, $creances, $montant, $preuveInfos, $notes, $batchKey) {
+            $reste = $montant;
+            $created = [];
+
+            foreach ($creances as $creance) {
+                if ($reste <= 0) {
+                    break;
+                }
+
+                // Vérifier statut à la volée
+                if (in_array($creance->statut, ['payee', 'annulee'])) {
+                    continue;
+                }
+
+                $restantCreance = (float) $creance->montant_restant;
+                if ($restantCreance <= 0) {
+                    continue;
+                }
+
+                $aPayer = min($reste, $restantCreance);
+                if ($aPayer <= 0) {
+                    continue;
+                }
+
+                $type = (abs($restantCreance - $aPayer) < 0.01)
+                    ? 'paiement_total'
+                    : 'paiement_partiel';
+
+                $tx = CreanceTransaction::create([
+                    'creance_id'      => $creance->id,
+                    'user_id'         => $client->id,
+                    'montant'         => $aPayer,
+                    'montant_avant'   => $restantCreance,
+                    'montant_apres'   => $restantCreance - $aPayer,
+                    'type'            => $type,
+                    'statut'          => 'en_attente',
+                    'preuve_fichier'  => $preuveInfos['chemin'] ?? null,
+                    'preuve_mimetype' => $preuveInfos['mimetype'] ?? null,
+                    'preuve_hash'     => $preuveInfos['hash'] ?? null,
+                    'notes'           => $notes,
+                    'ip_soumission'   => request()->ip(),
+                    // idempotency_key reste UNIQUE par transaction.
+                    'idempotency_key' => Str::uuid()->toString(),
+                    // batch_key regroupe toutes les transactions créées par une même soumission.
+                    'batch_key'       => $batchKey,
+                ]);
+
+                $this->anomaly->analyserClient($client, $creance->id, Creance::class);
+                $created[] = $tx;
+                $reste -= $aPayer;
+            }
+
+            if (empty($created)) {
+                throw new \RuntimeException('Aucune transaction de paiement n\'a pu être créée.');
+            }
+
+            return $created;
+        });
+
+        return [
+            'total_restant'    => $totalRestant,
+            'montant_soumis'   => $montant,
+            'creances_ciblees' => count($transactions),
+            'transactions'     => array_map(fn($t) => $t->toArray(), $transactions),
+        ];
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     //  VALIDATION ADMIN — DOUBLE SÉCURITÉ
     // ═══════════════════════════════════════════════════════════════════════

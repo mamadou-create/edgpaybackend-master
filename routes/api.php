@@ -526,6 +526,12 @@ Route::prefix('v1')->middleware(['auth:api', 'credit.profile'])->group(function 
         'creances/{id}/payer',
         [CreanceController::class, 'soumettrePaiement']
     )->middleware(['anti.replay:paiement,300', 'throttle:10,1']);
+
+    // Soumettre un remboursement du TOTAL restant (répartition automatique)
+    Route::post(
+        'mes-creances/payer-total',
+        [CreanceController::class, 'soumettrePaiementTotal']
+    )->middleware(['anti.replay:paiement,300', 'throttle:5,1']);
 });
 
 // ─── Routes ADMIN créances ───────────────────────────────────────────────────
@@ -546,6 +552,11 @@ Route::prefix('v1')->middleware(['auth:api', 'check-permission:credits.manage'])
     Route::post('creances/transactions/{id}/valider',
         [CreanceController::class, 'validerPaiement']
     )->middleware('throttle:30,1');
+
+    // Validation groupée (1 clic) : valide toutes les transactions en_attente d'une même soumission
+    Route::post('creances/transactions/batch/{idempotencyKey}/valider',
+        [CreanceController::class, 'validerPaiementBatch']
+    )->middleware('throttle:15,1');
 
     Route::post('creances/transactions/{id}/rejeter',
         [CreanceController::class, 'rejeterPaiement']

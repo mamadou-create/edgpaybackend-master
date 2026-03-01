@@ -31,6 +31,7 @@ class CreanceTransaction extends Model
         'receipt_number',
         'receipt_issued_at',
         'idempotency_key',
+        'batch_key',
         'notes',
         'motif_rejet',
         'ip_soumission',

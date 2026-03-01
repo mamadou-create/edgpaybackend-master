@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Models\Role;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
@@ -23,10 +24,29 @@ class UserFactory extends Factory
      */
     public function definition(): array
     {
+        // Minimal role required by schema.
+        // Tests can override `role_id` or use explicit states if needed.
+        $defaultRole = Role::query()->firstOrCreate(
+            ['slug' => 'client'],
+            [
+                'name' => 'Client',
+                'description' => 'Rôle client (tests)',
+                'is_super_admin' => false,
+            ]
+        );
+
         return [
-            'name' => fake()->name(),
+            'id' => (string) Str::uuid(),
             'email' => fake()->unique()->safeEmail(),
+            // Format validé côté modèle: /^(62|65|66)[0-9]{7}$/
+            'phone' => fake()->unique()->numerify('62#######'),
+            'display_name' => fake()->name(),
             'email_verified_at' => now(),
+            'status' => true,
+            'is_pro' => false,
+            'solde_portefeuille' => 0,
+            'commission_portefeuille' => 0,
+            'role_id' => $defaultRole->id,
             'password' => static::$password ??= Hash::make('password'),
             'remember_token' => Str::random(10),
         ];

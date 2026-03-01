@@ -6,13 +6,20 @@ use App\Models\CreditProfile;
 use App\Models\Creance;
 use App\Models\CreanceTransaction;
 use App\Models\LedgerEntry;
+use App\Models\Role;
 use App\Models\User;
+use App\Jobs\SendCreanceReimbursementBatchSubmittedMailJob;
+use App\Jobs\SendCreanceReimbursementSubmittedMailJob;
+use App\Jobs\SendCreanceBatchValidatedReceiptMailJob;
+use App\Jobs\SendCreanceValidatedReceiptMailJob;
 use App\Services\AnomalyDetectionService;
 use App\Services\AuditLogService;
 use App\Services\CreanceService;
 use App\Services\FinancialLedgerService;
 use App\Services\RiskScoringService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -58,15 +65,18 @@ class CreditModuleTest extends TestCase
 
         // Créer un client PRO avec profil crédit
         $this->clientPro = User::factory()->create(['is_pro' => true]);
-        CreditProfile::create([
-            'user_id'           => $this->clientPro->id,
-            'credit_limite'     => 500000,
-            'credit_disponible' => 500000,
-            'score_fiabilite'   => 60,
-            'niveau_risque'     => 'moyen',
-            'est_bloque'        => false,
-            'total_encours'     => 0,
-        ]);
+        // Un UserObserver peut auto-créer le profil ; on upsert pour éviter l'erreur UNIQUE.
+        CreditProfile::updateOrCreate(
+            ['user_id' => $this->clientPro->id],
+            [
+                'credit_limite'     => 500000,
+                'credit_disponible' => 500000,
+                'score_fiabilite'   => 60,
+                'niveau_risque'     => 'moyen',
+                'est_bloque'        => false,
+                'total_encours'     => 0,
+            ]
+        );
     }
 
     // ─── Test 1 : Scoring de base ─────────────────────────────────────────
@@ -314,5 +324,215 @@ class CreditModuleTest extends TestCase
 
         $response->assertStatus(200)
                  ->assertJsonStructure(['success', 'data', 'credit_profile']);
+    }
+
+    /** @test */
+    public function test_endpoint_payer_total_dispatch_un_seul_job_email_batch(): void
+    {
+        Queue::fake();
+
+        // Forcer une liste de destinataires admin pour garantir le dispatch.
+        config(['edgpay.credit.reimbursement_notify_emails' => ['admin@example.test']]);
+
+        // Créer 2 créances impayées pour que la soumission globale génère plusieurs transactions.
+        $this->creanceService->creerCreance(
+            $this->clientPro,
+            10000,
+            'Creance 1 (payer-total test)',
+            now()->addDays(30)->toDateString(),
+            $this->admin
+        );
+        $this->creanceService->creerCreance(
+            $this->clientPro,
+            15000,
+            'Creance 2 (payer-total test)',
+            now()->addDays(30)->toDateString(),
+            $this->admin
+        );
+
+        $batchKey = Str::uuid()->toString();
+
+        $this->actingAs($this->clientPro);
+        $response = $this
+            ->withHeader('X-Idempotency-Key', $batchKey)
+            ->postJson('/api/v1/mes-creances/payer-total', []);
+
+        $response
+            ->assertStatus(201)
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.batch_key', $batchKey);
+
+        Queue::assertPushed(SendCreanceReimbursementBatchSubmittedMailJob::class, 1);
+        Queue::assertPushed(SendCreanceReimbursementBatchSubmittedMailJob::class, function ($job) use ($batchKey) {
+            return (string) $job->clientId === (string) $this->clientPro->id
+                && (string) $job->batchKey === (string) $batchKey;
+        });
+
+        // S'assurer qu'on ne fait plus un email par transaction pour payer-total.
+        Queue::assertNotPushed(SendCreanceReimbursementSubmittedMailJob::class);
+    }
+
+    /** @test */
+    public function test_endpoint_valider_paiement_batch_valide_toutes_les_transactions(): void
+    {
+        // Super admin role pour bypass check-permission:credits.manage
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+
+        $admin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'is_pro' => false,
+        ]);
+
+        $client = User::factory()->create(['is_pro' => true]);
+        CreditProfile::updateOrCreate(
+            ['user_id' => $client->id],
+            [
+                'credit_limite' => 500000,
+                'credit_disponible' => 500000,
+                'score_fiabilite' => 60,
+                'niveau_risque' => 'moyen',
+                'est_bloque' => false,
+                'total_encours' => 0,
+            ]
+        );
+
+        // Créer 2 créances impayées
+        $this->creanceService->creerCreance(
+            $client,
+            10000,
+            'Batch creance 1',
+            now()->addDays(30)->toDateString(),
+            $admin
+        );
+        $this->creanceService->creerCreance(
+            $client,
+            15000,
+            'Batch creance 2',
+            now()->addDays(30)->toDateString(),
+            $admin
+        );
+
+        $batchKey = Str::uuid()->toString();
+
+        // Soumettre un paiement global (créé 2 transactions en_attente avec la même idempotency_key)
+        $result = $this->creanceService->soumettreRemboursTotal(
+            $client,
+            null,
+            null,
+            'paiement batch test',
+            $batchKey
+        );
+
+        $this->assertIsArray($result);
+        $this->assertArrayHasKey('transactions', $result);
+        $this->assertCount(2, $result['transactions']);
+
+        $txIds = collect($result['transactions'])->map(fn ($tx) => $tx['id'])->all();
+
+        $this->actingAs($admin);
+        $response = $this->postJson(
+            '/api/v1/creances/transactions/batch/' . $batchKey . '/valider'
+        );
+
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.batch_key', $batchKey)
+            ->assertJsonPath('data.validated_count', 2);
+
+        $this->assertEquals(
+            2,
+            CreanceTransaction::query()->whereIn('id', $txIds)->where('statut', 'valide')->count()
+        );
+    }
+
+    /** @test */
+    public function test_endpoint_valider_paiement_batch_dispatch_recu_client(): void
+    {
+        Queue::fake();
+
+        // Super admin role pour bypass check-permission:credits.manage
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+
+        $admin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'is_pro' => false,
+        ]);
+
+        $client = User::factory()->create([
+            'is_pro' => true,
+            'email' => 'client@example.test',
+        ]);
+
+        CreditProfile::updateOrCreate(
+            ['user_id' => $client->id],
+            [
+                'credit_limite' => 500000,
+                'credit_disponible' => 500000,
+                'score_fiabilite' => 60,
+                'niveau_risque' => 'moyen',
+                'est_bloque' => false,
+                'total_encours' => 0,
+            ]
+        );
+
+        // Créer 2 créances impayées
+        $this->creanceService->creerCreance(
+            $client,
+            10000,
+            'Batch creance 1 (recu test)',
+            now()->addDays(30)->toDateString(),
+            $admin
+        );
+        $this->creanceService->creerCreance(
+            $client,
+            15000,
+            'Batch creance 2 (recu test)',
+            now()->addDays(30)->toDateString(),
+            $admin
+        );
+
+        $batchKey = Str::uuid()->toString();
+
+        // Soumettre un paiement global (créé 2 transactions en_attente avec la même batch_key)
+        $result = $this->creanceService->soumettreRemboursTotal(
+            $client,
+            null,
+            null,
+            'paiement batch recu test',
+            $batchKey
+        );
+
+        $this->assertCount(2, $result['transactions']);
+        $txIds = collect($result['transactions'])->map(fn ($tx) => (string) $tx['id'])->all();
+
+        $this->actingAs($admin);
+        $response = $this->postJson('/api/v1/creances/transactions/batch/' . $batchKey . '/valider');
+
+        $response->assertStatus(200)->assertJsonPath('success', true);
+
+        // Un seul reçu récapitulatif par batch
+        Queue::assertPushed(SendCreanceBatchValidatedReceiptMailJob::class, 1);
+        Queue::assertPushed(SendCreanceBatchValidatedReceiptMailJob::class, function ($job) use ($client, $batchKey) {
+            return (string) $job->clientId === (string) $client->id
+                && (string) $job->batchKey === (string) $batchKey;
+        });
+
+        // Plus de reçu par transaction en batch
+        Queue::assertNotPushed(SendCreanceValidatedReceiptMailJob::class);
     }
 }

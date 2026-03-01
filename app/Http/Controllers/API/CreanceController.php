@@ -3,6 +3,10 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\SendCreanceReimbursementBatchSubmittedMailJob;
+use App\Jobs\SendCreanceReimbursementSubmittedMailJob;
+use App\Jobs\SendCreanceBatchValidatedReceiptMailJob;
+use App\Jobs\SendCreanceValidatedReceiptMailJob;
 use App\Models\Creance;
 use App\Models\CreanceTransaction;
 use App\Models\Role;
@@ -18,6 +22,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use App\Enums\RoleEnum;
 
@@ -226,43 +231,11 @@ class CreanceController extends Controller
         try {
             $creance = $this->service->validerPaiement($transaction, $admin);
 
-            // Notifier le client avec un reçu PDF (best effort).
+            // Notifier le client avec un reçu PDF (queue, best effort).
             try {
-                // Email/PDF can be slow; avoid fatal max_execution_time during validation.
-                @set_time_limit(120);
-
-                $txFresh = CreanceTransaction::with(['creance', 'client', 'validateur'])->findOrFail($transactionId);
-                $client = $txFresh->client;
-
-                if ($client instanceof User && !empty($client->email)) {
-                    $pdfBytes = null;
-                    if (class_exists(\Dompdf\Dompdf::class)) {
-                        try {
-                            $pdfBytes = app(MdingReceiptPdfService::class)->generateForTransaction($txFresh);
-                        } catch (\Throwable $pdfException) {
-                            Log::error('Erreur génération PDF reçu: ' . $pdfException->getMessage());
-                        }
-                    } else {
-                        Log::warning('dompdf/dompdf non installé: reçu PDF non généré.');
-                    }
-
-                    Mail::to($client->email)->send(
-                        new CreanceReimbursementValidatedReceiptMail($client, $txFresh->creance, $txFresh, $pdfBytes)
-                    );
-
-                    Log::info('[Creance] Email reçu envoyé', [
-                        'tx_id' => $txFresh->id,
-                        'client_id' => $client->id,
-                        'with_pdf' => !empty($pdfBytes),
-                    ]);
-                } else {
-                    Log::warning('[Creance] Email reçu non envoyé (client sans email)', [
-                        'tx_id' => $txFresh->id,
-                        'client_id' => $txFresh->user_id,
-                    ]);
-                }
+                SendCreanceValidatedReceiptMailJob::dispatch($transactionId);
             } catch (\Throwable $mailException) {
-                Log::error('Erreur envoi email (reçu paiement validé): ' . $mailException->getMessage());
+                Log::error('Erreur dispatch email (reçu paiement validé): ' . $mailException->getMessage());
             }
 
             return response()->json([
@@ -460,18 +433,14 @@ class CreanceController extends Controller
                 $data['notes'] ?? ''
             );
 
-            // Notifier par email (best effort) qu'un remboursement a été soumis.
+            // Notifier par email (queue, best effort) qu'un remboursement a été soumis.
             try {
                 $recipients = $this->resolveReimbursementRecipients($client);
                 if (!empty($recipients)) {
-                    Mail::to($recipients)->send(
-                        new CreanceReimbursementSubmittedMail($client, $creance, $tx)
-                    );
+                    SendCreanceReimbursementSubmittedMailJob::dispatch((string) $tx->id, $recipients);
                 }
             } catch (\Throwable $mailException) {
-                Log::error(
-                    'Erreur envoi email (remboursement soumis): ' . $mailException->getMessage()
-                );
+                Log::error('Erreur dispatch email (remboursement soumis): ' . $mailException->getMessage());
             }
 
             return response()->json([
@@ -483,6 +452,138 @@ class CreanceController extends Controller
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
+    }
+
+    /**
+     * POST /mes-creances/payer-total — Soumettre un paiement global (répartition automatique)
+     *
+     * Permet au client de soumettre en une seule action le paiement du total restant
+     * (ou d'un montant partiel) sur l'ensemble de ses créances impayées.
+     */
+    public function soumettrePaiementTotal(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            // Si absent, le backend soumet le total restant.
+            'montant' => ['nullable', 'numeric', 'min:0.01'],
+            'preuve'  => ['nullable', 'file', 'max:5120'], // 5 MB
+            'notes'   => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $client = Auth::user();
+        $batchKey = (string) ($request->header('X-Idempotency-Key') ?: Str::uuid()->toString());
+
+        try {
+            $result = $this->service->soumettreRemboursTotal(
+                $client,
+                isset($data['montant']) ? (float) $data['montant'] : null,
+                $request->file('preuve'),
+                $data['notes'] ?? '',
+                $batchKey,
+            );
+
+            // Notifier par email (queue, best effort) qu'un remboursement global a été soumis.
+            // Un seul email récapitulatif est envoyé aux admins (évite spam en cas de nombreuses créances).
+            try {
+                $recipients = $this->resolveReimbursementRecipients($client);
+                if (!empty($recipients)) {
+                    SendCreanceReimbursementBatchSubmittedMailJob::dispatch(
+                        (string) $client->id,
+                        (string) $batchKey,
+                        $recipients,
+                    );
+                }
+            } catch (\Throwable $mailException) {
+                Log::error('Erreur dispatch email (batch paiement global soumis): ' . $mailException->getMessage());
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Paiement global soumis. En attente de validation admin.',
+                'data'    => array_merge(['batch_key' => $batchKey], $result),
+            ], 201);
+
+        } catch (\RuntimeException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * POST /creances/transactions/batch/{idempotencyKey}/valider — Valider en 1 clic une soumission groupée
+     *
+    * Valide toutes les transactions en_attente portant la même batch_key.
+    * Les reçus email sont envoyés en arrière-plan (queue).
+     */
+    public function validerPaiementBatch(string $idempotencyKey): JsonResponse
+    {
+        /** @var User|null $admin */
+        $admin = Auth::user();
+
+        $transactions = CreanceTransaction::with('creance.client')
+            ->where('batch_key', $idempotencyKey)
+            ->where('statut', 'en_attente')
+            ->orderBy('created_at')
+            ->get();
+
+        if ($transactions->isEmpty()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Aucune transaction en attente trouvée pour cette soumission.',
+            ], 404);
+        }
+
+        if ($admin instanceof User && !$this->isSuperAdminUser($admin)) {
+            foreach ($transactions as $tx) {
+                $client = $tx->creance?->client;
+                if (!($client instanceof User) || !$this->clientIsAssignedToActor($client, $admin)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Non autorisé: une ou plusieurs transactions ne vous sont pas assignées.',
+                    ], 403);
+                }
+            }
+        }
+
+        $validatedIds = [];
+
+        foreach ($transactions as $tx) {
+            try {
+                $this->service->validerPaiement($tx, $admin);
+                $validatedIds[] = $tx->id;
+            } catch (\RuntimeException $e) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                    'data'    => [
+                        'batch_key'      => $idempotencyKey,
+                        'validated_count'=> count($validatedIds),
+                        'validated_ids'  => $validatedIds,
+                        'failed_tx_id'   => $tx->id,
+                    ],
+                ], 422);
+            }
+        }
+
+        // Notifier le(s) client(s) avec un seul reçu récapitulatif par batch (queue, best effort).
+        try {
+            $clientIds = collect($transactions)->pluck('user_id')->unique()->filter()->values();
+            foreach ($clientIds as $clientId) {
+                SendCreanceBatchValidatedReceiptMailJob::dispatch((string) $clientId, (string) $idempotencyKey);
+            }
+        } catch (\Throwable $mailException) {
+            Log::error('Erreur dispatch email (reçu batch): ' . $mailException->getMessage(), [
+                'batch_key' => $idempotencyKey,
+            ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Soumission validée avec succès.',
+            'data'    => [
+                'batch_key'       => $idempotencyKey,
+                'validated_count' => count($validatedIds),
+                'validated_ids'   => $validatedIds,
+            ],
+        ]);
     }
 
     /**
