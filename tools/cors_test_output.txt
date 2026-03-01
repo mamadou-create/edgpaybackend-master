@@ -1,0 +1,6 @@
+﻿OPTIONS status=204
+ACAO=*
+ACAM=POST
+ACAH=content-type,authorization
+POST status=401
+{"success":false,"message":"Les identifiants de connexion ne sont pas valides","errors":null,"data":null}

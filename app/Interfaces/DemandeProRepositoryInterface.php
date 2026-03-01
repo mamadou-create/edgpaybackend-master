@@ -1,0 +1,23 @@
+<?php
+
+namespace App\Interfaces;
+
+interface DemandeProRepositoryInterface extends CrudInterface
+{
+    public function findByStatus(string $status): iterable;
+
+    public function findByUser(string $userId);
+
+    public function updateStatus(string $id, string $status): bool;
+
+    // Nouvelle méthode pour annuler une demande avec soft delete
+    public function cancel(string $id, ?string $reason): bool;
+
+    // Méthodes pour gérer le soft delete
+    public function restore(string $id): bool;
+    public function forceDelete(string $id): bool;
+    public function getTrashed(): iterable;
+    public function findTrashedById(string $id): ?object;
+    public function findCancelled(): iterable;
+    public function canBeCancelled(string $id): bool;
+}
