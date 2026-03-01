@@ -8,19 +8,12 @@
             margin: 0;
             size: A5 portrait;
         }
-        body {
-            font-family: Helvetica, Arial, sans-serif;
-            color: #1E293B;
-            font-size: 12px;
             margin: 0;
             padding: 0;
             background: #ffffff;
         }
 
         /* ─── Header banner ─── */
-        .header-banner {
-            background: #094487;
-            padding: 18px 24px 14px 24px;
             color: #ffffff;
         }
         .header-banner table { width: 100%; }
@@ -218,9 +211,23 @@
             left: 0;
             right: 0;
             background: #062E5F;
+
+        /* ─── Digitized stamp ─── */
+        .cachet-img {
+            position: fixed;
+            right: 18px;
+            bottom: 62px;
+            width: 120px;
+            height: auto;
+            opacity: 0.35;
+        }
             padding: 10px 24px;
             color: #A8C8F0;
             font-size: 9px;
+
+@if(!empty($stamp_data_uri))
+    <img src="{{ $stamp_data_uri }}" class="cachet-img" alt="Cachet">
+@endif
         }
         .footer-bar table { width: 100%; }
         .footer-bar td { vertical-align: middle; }
@@ -235,8 +242,8 @@
         <table cellspacing="0" cellpadding="0">
             <tr>
                 <td style="width: 60%;">
-                    @if(!empty($logo_base64))
-                        <img src="data:image/png;base64,{{ $logo_base64 }}" class="logo-img" alt="MDING">
+                    @if(!empty($logo_data_uri))
+                        <img src="{{ $logo_data_uri }}" class="logo-img" alt="MDING">
                     @endif
                     <span class="brand-name">MDING</span>
                 </td>

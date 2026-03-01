@@ -5,6 +5,7 @@ namespace App\Mail;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Address;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
@@ -23,6 +24,7 @@ class CreanceReimbursementBatchValidatedMail extends Mailable
         public readonly array $transactions,
         public readonly float $totalValidated,
         public readonly ?string $validatedAt,
+        public readonly ?string $pdfBytes = null,
     ) {}
 
     public function envelope(): Envelope
@@ -49,6 +51,15 @@ class CreanceReimbursementBatchValidatedMail extends Mailable
 
     public function attachments(): array
     {
-        return [];
+        if (empty($this->pdfBytes)) {
+            return [];
+        }
+
+        return [
+            Attachment::fromData(
+                fn () => $this->pdfBytes,
+                'recu_batch_' . $this->batchKey . '.pdf'
+            )->withMime('application/pdf'),
+        ];
     }
 }

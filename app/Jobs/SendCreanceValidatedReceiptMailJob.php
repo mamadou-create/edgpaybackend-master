@@ -18,7 +18,23 @@ class SendCreanceValidatedReceiptMailJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
+    /**
+     * Keep retrying for a while (do not fail fast) to avoid missing PDF sends
+     * when the environment (GD/assets) is temporarily not ready.
+     */
+    public int $tries = 50;
+
     public function __construct(public readonly string $transactionId) {}
+
+    public function backoff(): int
+    {
+        return 300;
+    }
+
+    public function retryUntil(): \DateTimeInterface
+    {
+        return now()->addDays(2);
+    }
 
     public function handle(): void
     {
@@ -40,18 +56,19 @@ class SendCreanceValidatedReceiptMailJob implements ShouldQueue
         }
 
         $pdfBytes = null;
-        if (class_exists(\Dompdf\Dompdf::class)) {
-            try {
-                $pdfBytes = app(MdingReceiptPdfService::class)->generateForTransaction($tx);
-            } catch (\Throwable $e) {
-                Log::error('[Creance] Erreur génération PDF reçu: ' . $e->getMessage(), [
-                    'tx_id' => $tx->id,
-                ]);
+        try {
+            if (!class_exists(\Dompdf\Dompdf::class)) {
+                throw new \RuntimeException('dompdf/dompdf non installé');
             }
-        } else {
-            Log::warning('[Creance] dompdf/dompdf non installé: reçu PDF non généré.', [
+            $pdfBytes = app(MdingReceiptPdfService::class)->generateForTransaction($tx);
+        } catch (\Throwable $e) {
+            Log::error('[Creance] PDF reçu non généré, re-queue dans 5 min: ' . $e->getMessage(), [
                 'tx_id' => $tx->id,
             ]);
+
+            // Do NOT send email without PDF. Re-queue so it can succeed once GD/assets are fixed.
+            $this->release(300);
+            return;
         }
 
         try {

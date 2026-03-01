@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Mail\CreanceReimbursementBatchValidatedMail;
 use App\Models\CreanceTransaction;
 use App\Models\User;
+use App\Services\MdingReceiptPdfService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -17,10 +18,26 @@ class SendCreanceBatchValidatedReceiptMailJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
+    /**
+     * Keep retrying for a while (do not fail fast) to avoid missing PDF sends
+     * when the environment (GD/assets) is temporarily not ready.
+     */
+    public int $tries = 50;
+
     public function __construct(
         public readonly string $clientId,
         public readonly string $batchKey,
     ) {}
+
+    public function backoff(): int
+    {
+        return 300;
+    }
+
+    public function retryUntil(): \DateTimeInterface
+    {
+        return now()->addDays(2);
+    }
 
     public function handle(): void
     {
@@ -68,6 +85,30 @@ class SendCreanceBatchValidatedReceiptMailJob implements ShouldQueue
             ];
         }
 
+        $pdfBytes = null;
+        try {
+            if (!class_exists(\Dompdf\Dompdf::class)) {
+                throw new \RuntimeException('dompdf/dompdf non installé');
+            }
+            /** @var MdingReceiptPdfService $pdfService */
+            $pdfService = app(MdingReceiptPdfService::class);
+            $pdfBytes = $pdfService->generateForBatchValidated(
+                client: $client,
+                batchKey: $this->batchKey,
+                transactions: $txs->all(),
+                validatedAt: $validatedAt,
+            );
+        } catch (\Throwable $e) {
+            Log::error('[Creance] PDF batch reçu non généré, re-queue dans 5 min: ' . $e->getMessage(), [
+                'client_id' => $client->id,
+                'batch_key' => $this->batchKey,
+            ]);
+
+            // Do NOT send email without PDF. Re-queue so it can succeed once GD/assets are fixed.
+            $this->release(300);
+            return;
+        }
+
         try {
             @set_time_limit(60);
             Mail::to($client->email)->send(
@@ -77,6 +118,7 @@ class SendCreanceBatchValidatedReceiptMailJob implements ShouldQueue
                     transactions: $transactions,
                     totalValidated: $totalValidated,
                     validatedAt: $validatedAt,
+                    pdfBytes: $pdfBytes,
                 )
             );
 

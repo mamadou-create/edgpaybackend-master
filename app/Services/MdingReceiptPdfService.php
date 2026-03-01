@@ -13,22 +13,11 @@ class MdingReceiptPdfService
     {
         $transaction->loadMissing(['creance', 'client', 'validateur']);
 
-        // Load and encode the MDING logo as base64 for embedding in PDF
-        $logoBase64 = '';
-        $logoPath = public_path('images/mding_logo.png');
-        if (!file_exists($logoPath)) {
-            $logoPath = storage_path('app/mding_logo.png');
-        }
-        if (file_exists($logoPath)) {
-            $logoBase64 = base64_encode((string) file_get_contents($logoPath));
-        }
-
         $html = View::make('pdfs.mding_receipt', [
             'tx' => $transaction,
             'creance' => $transaction->creance,
             'client' => $transaction->client,
             'validateur' => $transaction->validateur,
-            'logo_base64' => $logoBase64,
         ])->render();
 
         $options = new Options();
@@ -40,6 +29,37 @@ class MdingReceiptPdfService
         $dompdf = new Dompdf($options);
         $dompdf->loadHtml($html, 'UTF-8');
         $dompdf->setPaper('A5', 'portrait');
+        $dompdf->render();
+
+        return $dompdf->output();
+    }
+
+    /**
+     * Génère un reçu PDF récapitulatif pour une validation batch.
+     *
+     * @param array<int,CreanceTransaction> $transactions
+     */
+    public function generateForBatchValidated(
+        \App\Models\User $client,
+        string $batchKey,
+        array $transactions,
+        ?string $validatedAt = null,
+    ): string {
+        $html = View::make('pdfs.mding_batch_receipt', [
+            'client' => $client,
+            'batch_key' => $batchKey,
+            'transactions' => $transactions,
+            'validated_at' => $validatedAt,
+        ])->render();
+
+        $options = new Options();
+        $options->set('isRemoteEnabled', true);
+        $options->set('isFontSubsettingEnabled', true);
+        $options->set('defaultFont', 'Helvetica');
+
+        $dompdf = new Dompdf($options);
+        $dompdf->loadHtml($html, 'UTF-8');
+        $dompdf->setPaper('A4', 'portrait');
         $dompdf->render();
 
         return $dompdf->output();
