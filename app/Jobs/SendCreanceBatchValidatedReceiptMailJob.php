@@ -105,7 +105,10 @@ class SendCreanceBatchValidatedReceiptMailJob implements ShouldQueue
             ]);
 
             // Do NOT send email without PDF. Re-queue so it can succeed once GD/assets are fixed.
-            $this->release(300);
+            // If executed synchronously (dispatchSync), there's no queue job to release.
+            if (!empty($this->job)) {
+                $this->release(300);
+            }
             return;
         }
 

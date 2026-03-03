@@ -7,10 +7,14 @@ use App\Jobs\SendCreanceReimbursementBatchSubmittedMailJob;
 use App\Jobs\SendCreanceReimbursementSubmittedMailJob;
 use App\Jobs\SendCreanceBatchValidatedReceiptMailJob;
 use App\Jobs\SendCreanceValidatedReceiptMailJob;
+use App\Jobs\SendCreanceRejectedMailJob;
+use App\Jobs\SendCreanceBatchRejectedMailJob;
 use App\Models\Creance;
 use App\Models\CreanceTransaction;
 use App\Models\Role;
 use App\Models\User;
+use App\Models\Wallet;
+use App\Models\WalletTransaction;
 use App\Services\CreanceService;
 use App\Services\AuditLogService;
 use App\Mail\CreanceReimbursementSubmittedMail;
@@ -19,6 +23,7 @@ use App\Services\MdingReceiptPdfService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
@@ -67,6 +72,77 @@ class CreanceController extends Controller
         return (string) $client->assigned_user === (string) $actor->id;
     }
 
+    private function fmtGnf(float $v): string
+    {
+        return number_format((float) $v, 0, '.', ' ') . ' GNF';
+    }
+
+    /**
+     * Crée un avoir (crédit) dans le wallet du client pour un excédent de paiement.
+     * Idempotent via la référence (si déjà créée, retourne le montant existant).
+     */
+    private function creditWalletOverpayment(
+        User $client,
+        float $excessAmount,
+        string $reference,
+        array $metadata = [],
+        ?string $description = null,
+    ): int {
+        $amount = (int) round($excessAmount);
+        if ($amount <= 0) {
+            return 0;
+        }
+
+        return (int) DB::transaction(function () use ($client, $amount, $reference, $metadata, $description) {
+            // Verrouiller ou créer le wallet
+            $wallet = Wallet::query()->where('user_id', $client->id)->lockForUpdate()->first();
+            if (!($wallet instanceof Wallet)) {
+                $wallet = Wallet::create([
+                    'user_id' => $client->id,
+                    'currency' => 'GNF',
+                    'cash_available' => 0,
+                    'blocked_amount' => 0,
+                    'commission_available' => 0,
+                    'commission_balance' => 0,
+                ]);
+                $wallet = Wallet::query()->where('id', $wallet->id)->lockForUpdate()->firstOrFail();
+            }
+
+            // Idempotence: si la transaction existe déjà, ne pas doubler.
+            $existing = WalletTransaction::query()
+                ->where('wallet_id', $wallet->id)
+                ->where('type', 'credit_note')
+                ->where('reference', $reference)
+                ->first();
+            if ($existing instanceof WalletTransaction) {
+                return (int) $existing->amount;
+            }
+
+            $wallet->cash_available += $amount;
+            $wallet->save();
+
+            // Sync aussi le solde utilisateur (champ utilisé ailleurs).
+            $lockedUser = User::query()->lockForUpdate()->findOrFail($client->id);
+            $lockedUser->solde_portefeuille = (int) ($lockedUser->solde_portefeuille ?? 0) + $amount;
+            $lockedUser->save();
+
+            WalletTransaction::create([
+                'wallet_id' => $wallet->id,
+                'user_id' => $client->id,
+                'amount' => $amount,
+                'type' => 'credit_note',
+                'reference' => $reference,
+                'description' => $description ?? 'Avoir (excédent paiement créance)',
+                'metadata' => array_merge([
+                    'source' => 'creance_overpayment',
+                    'timestamp' => now()->toISOString(),
+                ], $metadata),
+            ]);
+
+            return $amount;
+        });
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     //  ADMIN
     // ═══════════════════════════════════════════════════════════════════════
@@ -97,34 +173,9 @@ class CreanceController extends Controller
         }
 
         $metadata = is_array($data['metadata'] ?? null) ? ($data['metadata'] ?? []) : [];
-        $bypassRequested = filter_var($metadata['bypass_credit_limit'] ?? false, FILTER_VALIDATE_BOOLEAN);
-
-        if ($bypassRequested) {
-            $roleSlug = null;
-            try {
-                $roleSlug = optional($admin?->role)->slug;
-            } catch (\Throwable $e) {
-                $roleSlug = null;
-            }
-
-            if (! $roleSlug && $admin?->role_id) {
-                $roleSlug = Role::whereKey($admin->role_id)->value('slug');
-            }
-
-            $allowed = [
-                RoleEnum::SUPER_ADMIN,
-                RoleEnum::SUPPORT_ADMIN,
-                RoleEnum::FINANCE_ADMIN,
-                RoleEnum::COMMERCIAL_ADMIN,
-            ];
-
-            if (! $roleSlug || ! in_array($roleSlug, $allowed, true)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Bypass non autorisé pour ce rôle.',
-                ], 403);
-            }
-        }
+        // Règle métier: un impayé (créance) ne doit pas dépasser la limite de crédit du client.
+        // Même si un ancien client/front envoie `bypass_credit_limit`, on l'ignore.
+        $bypassRequested = false;
 
         try {
             $creance = $this->service->creerCreance(
@@ -231,19 +282,41 @@ class CreanceController extends Controller
         try {
             $creance = $this->service->validerPaiement($transaction, $admin);
 
+            // Montants (utile pour afficher l'excédent converti en avoir).
+            $tx = CreanceTransaction::query()->find($transactionId);
+            $montantSoumis = $tx ? (float) $tx->montant : 0.0;
+            $montantAvant = $tx ? (float) $tx->montant_avant : 0.0;
+            $montantApres = $tx ? (float) $tx->montant_apres : 0.0;
+            $montantValide = max(0.0, $montantAvant - $montantApres);
+            $avoir = (int) round(max(0.0, $montantSoumis - $montantValide));
+
             // Notifier le client avec un reçu PDF (queue, best effort).
             try {
-                SendCreanceValidatedReceiptMailJob::dispatch($transactionId);
+                $mode = config('edgpay.credit.receipt_mail_mode', 'queue');
+                if ($mode === 'sync') {
+                    SendCreanceValidatedReceiptMailJob::dispatchSync($transactionId);
+                } else {
+                    SendCreanceValidatedReceiptMailJob::dispatch($transactionId);
+                }
             } catch (\Throwable $mailException) {
                 Log::error('Erreur dispatch email (reçu paiement validé): ' . $mailException->getMessage());
             }
 
             return response()->json([
                 'success' => true,
-                'message' => 'Paiement validé avec succès.',
+                'message' => $avoir > 0
+                    ? sprintf(
+                        'Paiement validé. Excédent crédité sur le portefeuille : %s',
+                        $this->fmtGnf((float) $avoir)
+                    )
+                    : 'Paiement validé avec succès.',
+                'avoir_montant' => $avoir,
                 'data'    => [
                     'creance'           => $creance,
                     'credit_profile'    => $creance->client->creditProfile,
+                    'montant_soumis'    => (int) round($montantSoumis),
+                    'montant_valide'    => (int) round($montantValide),
+                    'avoir_montant'     => $avoir,
                 ],
             ]);
         } catch (\RuntimeException $e) {
@@ -263,6 +336,22 @@ class CreanceController extends Controller
         $transaction = CreanceTransaction::with('creance.client')->findOrFail($transactionId);
         $admin = Auth::user();
 
+        // Idempotence: si déjà rejeté, on répond OK (évite les échecs intermittents en double-clic)
+        if ($transaction->statut === 'rejete') {
+            return response()->json([
+                'success' => true,
+                'message' => 'Paiement déjà rejeté.',
+                'data' => $transaction,
+            ]);
+        }
+
+        if ($transaction->statut !== 'en_attente') {
+            return response()->json([
+                'success' => false,
+                'message' => "Transaction déjà traitée (statut: {$transaction->statut}).",
+            ], 409);
+        }
+
         if ($admin instanceof User && !$this->isSuperAdminUser($admin)) {
             $client = $transaction->creance?->client;
             if (!($client instanceof User) || !$this->clientIsAssignedToActor($client, $admin)) {
@@ -275,10 +364,129 @@ class CreanceController extends Controller
 
         try {
             $tx = $this->service->rejeterPaiement($transaction, $admin, $data['motif']);
+
+            // Envoyer un email au client (configurable sync/queue)
+            $mode = config('edgpay.credit.rejection_mail_mode', 'queue');
+            if ($mode === 'sync') {
+                SendCreanceRejectedMailJob::dispatchSync((string) $tx->id);
+            } else {
+                SendCreanceRejectedMailJob::dispatch((string) $tx->id);
+            }
             return response()->json(['success' => true, 'message' => 'Paiement rejeté.', 'data' => $tx]);
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
+    }
+
+    /**
+     * POST /creances/transactions/batch/{idempotencyKey}/rejeter — Rejeter en 1 clic une soumission groupée
+     *
+     * Rejette toutes les transactions en_attente portant la même batch_key.
+     */
+    public function rejeterPaiementBatch(Request $request, string $idempotencyKey): JsonResponse
+    {
+        $data = $request->validate([
+            'motif' => ['required', 'string', 'max:500'],
+        ]);
+
+        /** @var User|null $admin */
+        $admin = Auth::user();
+
+        $allTransactions = CreanceTransaction::with('creance.client')
+            ->where('batch_key', $idempotencyKey)
+            ->orderBy('created_at')
+            ->get();
+
+        if ($allTransactions->isEmpty()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Soumission introuvable.',
+            ], 404);
+        }
+
+        $transactions = $allTransactions->where('statut', 'en_attente')->values();
+
+        // Idempotence: plus rien à rejeter (déjà traité)
+        if ($transactions->isEmpty()) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Aucune transaction en attente: soumission déjà traitée.',
+                'data'    => [
+                    'batch_key'      => $idempotencyKey,
+                    'rejected_count' => 0,
+                    'rejected_ids'   => [],
+                ],
+            ]);
+        }
+
+        if ($admin instanceof User && !$this->isSuperAdminUser($admin)) {
+            foreach ($transactions as $tx) {
+                $client = $tx->creance?->client;
+                if (!($client instanceof User) || !$this->clientIsAssignedToActor($client, $admin)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Non autorisé: une ou plusieurs transactions ne vous sont pas assignées.',
+                    ], 403);
+                }
+            }
+        }
+
+        $rejectedIds = [];
+        $skippedIds = [];
+
+        foreach ($transactions as $tx) {
+            try {
+                $this->service->rejeterPaiement($tx, $admin, (string) $data['motif']);
+                $rejectedIds[] = $tx->id;
+            } catch (\RuntimeException $e) {
+                // Tolérer les courses: si déjà traité entre la liste et le lock, on skip.
+                if (str_contains($e->getMessage(), 'Transaction déjà traitée')) {
+                    $skippedIds[] = $tx->id;
+                    continue;
+                }
+
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                    'data'    => [
+                        'batch_key'      => $idempotencyKey,
+                        'rejected_count' => count($rejectedIds),
+                        'rejected_ids'   => $rejectedIds,
+                        'skipped_ids'    => $skippedIds,
+                        'failed_tx_id'   => $tx->id,
+                    ],
+                ], 422);
+            }
+        }
+
+        // Envoyer un email de rejet au(x) client(s) concerné(s) seulement si on a réellement rejeté.
+        if (!empty($rejectedIds)) {
+            $mode = config('edgpay.credit.rejection_mail_mode', 'queue');
+            $clientIds = $allTransactions
+                ->pluck('creance.client.id')
+                ->filter()
+                ->unique()
+                ->values();
+
+            foreach ($clientIds as $clientId) {
+                if ($mode === 'sync') {
+                    SendCreanceBatchRejectedMailJob::dispatchSync((string) $clientId, (string) $idempotencyKey);
+                } else {
+                    SendCreanceBatchRejectedMailJob::dispatch((string) $clientId, (string) $idempotencyKey);
+                }
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Soumission rejetée.',
+            'data'    => [
+                'batch_key'      => $idempotencyKey,
+                'rejected_count' => count($rejectedIds),
+                'rejected_ids'   => $rejectedIds,
+                'skipped_ids'    => $skippedIds,
+            ],
+        ]);
     }
 
     /**
@@ -372,6 +580,36 @@ class CreanceController extends Controller
     }
 
     /**
+     * GET /mes-creances/resume — Résumé global des créances (tous statuts)
+     *
+     * Objectif : fournir des montants par statut fiables même si /mes-creances
+     * est paginé ou filtré côté client.
+     */
+    public function mesCreancesResume(Request $request): JsonResponse
+    {
+        /** @var User $user */
+        $user = Auth::user();
+
+        $rows = Creance::query()
+            ->select([
+                'statut',
+                DB::raw('COUNT(*) as nb'),
+                DB::raw('COALESCE(SUM(montant_restant), 0) as total_restant'),
+                DB::raw('COALESCE(SUM(montant_total), 0) as total_montant'),
+                DB::raw('COALESCE(SUM(montant_paye), 0) as total_paye'),
+            ])
+            ->where('user_id', $user->id)
+            ->groupBy('statut')
+            ->orderBy('statut')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data'    => $rows,
+        ]);
+    }
+
+    /**
      * GET /mes-creances/{id} — Détail d'une créance du client connecté
      */
     public function mesCreanceDetail(string $id): JsonResponse
@@ -418,26 +656,122 @@ class CreanceController extends Controller
             'type'    => ['required', Rule::in(['paiement_total', 'paiement_partiel'])],
             'preuve'  => ['nullable', 'file', 'max:5120'], // 5 MB
             'notes'   => ['nullable', 'string', 'max:1000'],
+            'wallet_use' => ['nullable', 'boolean'],
+            'wallet_mode' => ['nullable', Rule::in(['auto', 'manuel'])],
+            'wallet_montant' => ['nullable', 'numeric', 'min:0.01'],
         ]);
 
         $client  = Auth::user();
         $creance = Creance::where('user_id', $client->id)->findOrFail($creanceId);
 
+        $requestedAmount = (float) $data['montant'];
+        $useWallet = $request->boolean('wallet_use');
+        $walletMode = (string) ($data['wallet_mode'] ?? 'auto');
+        $walletMontant = isset($data['wallet_montant']) ? (float) $data['wallet_montant'] : null;
+        $walletBalanceHint = (float) ((($client instanceof User) ? ($client->solde_portefeuille ?? 0) : 0) ?: 0);
+        $remaining = (float) $creance->montant_restant;
+        $payable = $requestedAmount;
+        $excess = 0.0;
+        $type = $data['type'];
+
+        // Si wallet activé: pas d'"excédent" (pas de fonds externes), on cap juste au restant.
+        $walletToUse = 0.0;
+        if ($useWallet) {
+            if ($remaining > 0) {
+                $requestedAmount = min($requestedAmount, $remaining);
+                $payable = $requestedAmount;
+
+                if ($walletMode === 'manuel') {
+                    $walletToUse = (float) max(0.0, (float) ($walletMontant ?? 0.0));
+                } else {
+                    $walletToUse = $payable; // auto: on tente de couvrir le montant demandé
+                }
+                $walletToUse = min($walletToUse, $payable);
+                $walletToUse = min($walletToUse, $walletBalanceHint);
+            }
+        }
+
+        if (!$useWallet && $requestedAmount > $remaining && $remaining > 0) {
+            $payable = $remaining;
+            $excess = $requestedAmount - $remaining;
+            $type = 'paiement_total';
+        }
+
         try {
+            if ($useWallet && $walletToUse > 0.01) {
+                $idem = (string) ($request->header('X-Idempotency-Key') ?: Str::uuid()->toString());
+                $ref = 'wallet_pay_creance:' . $idem . ':' . (string) $creance->id;
+
+                $this->service->payerCreanceAvecWallet(
+                    $client,
+                    $creance,
+                    (float) $walletToUse,
+                    $ref,
+                    [
+                        'creance_id' => (string) $creance->id,
+                        'montant_demande' => $requestedAmount,
+                        'wallet_mode' => $walletMode,
+                    ]
+                );
+
+                // Recharger la créance après application wallet.
+                $creance = Creance::where('user_id', $client->id)->findOrFail($creanceId);
+                $remaining = (float) $creance->montant_restant;
+                $payable = max(0.0, (float) $requestedAmount - (float) $walletToUse);
+            }
+
+            if ($payable <= 0.01) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Paiement effectué via votre portefeuille (avoir).',
+                    'data' => null,
+                    'avoir_montant' => 0,
+                ], 201);
+            }
+
+            // Backend expects `type`: paiement_total | paiement_partiel
+            if ($remaining > 0 && abs($remaining - $payable) < 0.01) {
+                $type = 'paiement_total';
+            } else {
+                $type = 'paiement_partiel';
+            }
+
             $tx = $this->service->soumettreRembours(
                 $client,
                 $creance,
-                (float) $data['montant'],
-                $data['type'],
+                (float) $payable,
+                $type,
                 $request->file('preuve'),
                 $data['notes'] ?? ''
             );
+
+            $avoir = 0;
+            if ($excess > 0) {
+                $avoir = $this->creditWalletOverpayment(
+                    $client,
+                    $excess,
+                    'credit_note_overpay_creance_tx:' . (string) $tx->id,
+                    [
+                        'creance_id' => (string) $creance->id,
+                        'transaction_id' => (string) $tx->id,
+                        'montant_soumis' => $requestedAmount,
+                        'montant_paye' => $payable,
+                        'montant_excedent' => $excess,
+                    ],
+                    'Avoir: excédent paiement créance',
+                );
+            }
 
             // Notifier par email (queue, best effort) qu'un remboursement a été soumis.
             try {
                 $recipients = $this->resolveReimbursementRecipients($client);
                 if (!empty($recipients)) {
-                    SendCreanceReimbursementSubmittedMailJob::dispatch((string) $tx->id, $recipients);
+                    $mode = config('edgpay.credit.reimbursement_mail_mode', 'queue');
+                    if ($mode === 'sync') {
+                        SendCreanceReimbursementSubmittedMailJob::dispatchSync((string) $tx->id, $recipients);
+                    } else {
+                        SendCreanceReimbursementSubmittedMailJob::dispatch((string) $tx->id, $recipients);
+                    }
                 }
             } catch (\Throwable $mailException) {
                 Log::error('Erreur dispatch email (remboursement soumis): ' . $mailException->getMessage());
@@ -445,8 +779,11 @@ class CreanceController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Paiement soumis. En attente de validation admin.',
+                'message' => $avoir > 0
+                    ? sprintf('Paiement soumis. Excédent crédité sur votre portefeuille : %s', $this->fmtGnf((float) $avoir))
+                    : 'Paiement soumis. En attente de validation admin.',
                 'data'    => $tx,
+                'avoir_montant' => $avoir,
             ], 201);
 
         } catch (\RuntimeException $e) {
@@ -467,30 +804,124 @@ class CreanceController extends Controller
             'montant' => ['nullable', 'numeric', 'min:0.01'],
             'preuve'  => ['nullable', 'file', 'max:5120'], // 5 MB
             'notes'   => ['nullable', 'string', 'max:1000'],
+            'wallet_use' => ['nullable', 'boolean'],
+            'wallet_mode' => ['nullable', Rule::in(['auto', 'manuel'])],
+            'wallet_montant' => ['nullable', 'numeric', 'min:0.01'],
         ]);
 
         $client = Auth::user();
         $batchKey = (string) ($request->header('X-Idempotency-Key') ?: Str::uuid()->toString());
 
+        $requestedAmount = isset($data['montant']) ? (float) $data['montant'] : null;
+        $useWallet = $request->boolean('wallet_use');
+        $walletMode = (string) ($data['wallet_mode'] ?? 'auto');
+        $walletMontant = isset($data['wallet_montant']) ? (float) $data['wallet_montant'] : null;
+        $walletBalanceHint = (float) ((($client instanceof User) ? ($client->solde_portefeuille ?? 0) : 0) ?: 0);
+        $payable = $requestedAmount;
+        $excess = 0.0;
+
+        $walletToUse = 0.0;
+
+        if ($requestedAmount !== null) {
+            $totalRestant = (float) Creance::query()
+                ->where('user_id', $client->id)
+                ->whereNotIn('statut', ['payee', 'annulee'])
+                ->sum('montant_restant');
+
+            if ($totalRestant <= 0) {
+                return response()->json(['success' => false, 'message' => 'Aucun montant restant à payer.'], 422);
+            }
+
+            if ($useWallet) {
+                // Avec wallet: cap au total restant (pas d'excédent).
+                $requestedAmount = min($requestedAmount, $totalRestant);
+                $payable = $requestedAmount;
+
+                if ($walletMode === 'manuel') {
+                    $walletToUse = (float) max(0.0, (float) ($walletMontant ?? 0.0));
+                } else {
+                    $walletToUse = (float) $payable;
+                }
+                $walletToUse = min($walletToUse, (float) $payable);
+                $walletToUse = min($walletToUse, $walletBalanceHint);
+            } elseif ($requestedAmount > $totalRestant) {
+                $payable = $totalRestant;
+                $excess = $requestedAmount - $totalRestant;
+            }
+        }
+
         try {
+            if ($useWallet && $walletToUse > 0.01) {
+                $idem = (string) ($request->header('X-Idempotency-Key') ?: $batchKey);
+                $ref = 'wallet_pay_creance_total:' . $idem;
+
+                $this->service->payerTotalAvecWallet(
+                    $client,
+                    (float) $walletToUse,
+                    $ref,
+                    [
+                        'batch_key' => (string) $batchKey,
+                        'montant_demande' => $requestedAmount,
+                        'wallet_mode' => $walletMode,
+                    ]
+                );
+
+                $payable = $requestedAmount !== null
+                    ? max(0.0, (float) $requestedAmount - (float) $walletToUse)
+                    : null;
+            }
+
+            if ($payable !== null && $payable <= 0.01) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Paiement effectué via votre portefeuille (avoir).',
+                    'data' => ['batch_key' => $batchKey, 'avoir_montant' => 0],
+                ], 201);
+            }
+
             $result = $this->service->soumettreRemboursTotal(
                 $client,
-                isset($data['montant']) ? (float) $data['montant'] : null,
+                $payable,
                 $request->file('preuve'),
                 $data['notes'] ?? '',
                 $batchKey,
             );
+
+            $avoir = 0;
+            if ($excess > 0) {
+                $avoir = $this->creditWalletOverpayment(
+                    $client,
+                    $excess,
+                    'credit_note_overpay_creance_batch:' . (string) $batchKey,
+                    [
+                        'batch_key' => (string) $batchKey,
+                        'montant_soumis' => $requestedAmount,
+                        'montant_paye' => $payable,
+                        'montant_excedent' => $excess,
+                    ],
+                    'Avoir: excédent paiement global (creances)',
+                );
+            }
 
             // Notifier par email (queue, best effort) qu'un remboursement global a été soumis.
             // Un seul email récapitulatif est envoyé aux admins (évite spam en cas de nombreuses créances).
             try {
                 $recipients = $this->resolveReimbursementRecipients($client);
                 if (!empty($recipients)) {
-                    SendCreanceReimbursementBatchSubmittedMailJob::dispatch(
-                        (string) $client->id,
-                        (string) $batchKey,
-                        $recipients,
-                    );
+                    $mode = config('edgpay.credit.reimbursement_mail_mode', 'queue');
+                    if ($mode === 'sync') {
+                        SendCreanceReimbursementBatchSubmittedMailJob::dispatchSync(
+                            (string) $client->id,
+                            (string) $batchKey,
+                            $recipients,
+                        );
+                    } else {
+                        SendCreanceReimbursementBatchSubmittedMailJob::dispatch(
+                            (string) $client->id,
+                            (string) $batchKey,
+                            $recipients,
+                        );
+                    }
                 }
             } catch (\Throwable $mailException) {
                 Log::error('Erreur dispatch email (batch paiement global soumis): ' . $mailException->getMessage());
@@ -498,8 +929,13 @@ class CreanceController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Paiement global soumis. En attente de validation admin.',
-                'data'    => array_merge(['batch_key' => $batchKey], $result),
+                'message' => $avoir > 0
+                    ? sprintf(
+                        'Paiement global soumis. Excédent crédité sur votre portefeuille : %s',
+                        $this->fmtGnf((float) $avoir)
+                    )
+                    : 'Paiement global soumis. En attente de validation admin.',
+                'data'    => array_merge(['batch_key' => $batchKey, 'avoir_montant' => $avoir], $result),
             ], 201);
 
         } catch (\RuntimeException $e) {
@@ -544,11 +980,21 @@ class CreanceController extends Controller
         }
 
         $validatedIds = [];
+        $avoirTotal = 0;
 
         foreach ($transactions as $tx) {
             try {
                 $this->service->validerPaiement($tx, $admin);
                 $validatedIds[] = $tx->id;
+
+                // Calcul excédent: montant - (montant_avant - montant_apres)
+                $freshTx = CreanceTransaction::query()->find($tx->id);
+                if ($freshTx instanceof CreanceTransaction) {
+                    $montantSoumis = (float) $freshTx->montant;
+                    $montantValide = max(0.0, (float) $freshTx->montant_avant - (float) $freshTx->montant_apres);
+                    $avoir = max(0.0, $montantSoumis - $montantValide);
+                    $avoirTotal += (int) round($avoir);
+                }
             } catch (\RuntimeException $e) {
                 return response()->json([
                     'success' => false,
@@ -567,7 +1013,12 @@ class CreanceController extends Controller
         try {
             $clientIds = collect($transactions)->pluck('user_id')->unique()->filter()->values();
             foreach ($clientIds as $clientId) {
-                SendCreanceBatchValidatedReceiptMailJob::dispatch((string) $clientId, (string) $idempotencyKey);
+                $mode = config('edgpay.credit.receipt_mail_mode', 'queue');
+                if ($mode === 'sync') {
+                    SendCreanceBatchValidatedReceiptMailJob::dispatchSync((string) $clientId, (string) $idempotencyKey);
+                } else {
+                    SendCreanceBatchValidatedReceiptMailJob::dispatch((string) $clientId, (string) $idempotencyKey);
+                }
             }
         } catch (\Throwable $mailException) {
             Log::error('Erreur dispatch email (reçu batch): ' . $mailException->getMessage(), [
@@ -577,18 +1028,25 @@ class CreanceController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Soumission validée avec succès.',
+            'message' => $avoirTotal > 0
+                ? sprintf(
+                    'Soumission validée. Excédent crédité sur le portefeuille : %s',
+                    $this->fmtGnf((float) $avoirTotal)
+                )
+                : 'Soumission validée avec succès.',
+            'avoir_montant' => $avoirTotal,
             'data'    => [
                 'batch_key'       => $idempotencyKey,
                 'validated_count' => count($validatedIds),
                 'validated_ids'   => $validatedIds,
+                'avoir_montant'   => $avoirTotal,
             ],
         ]);
     }
 
     /**
      * Résout les destinataires pour la notification "remboursement soumis".
-     * Priorité : CREDIT_REIMBURSEMENT_NOTIFY_EMAILS (.env) > sous-admin assigné > super-admins.
+     * Priorité : CREDIT_REIMBURSEMENT_NOTIFY_EMAILS (.env) > sous-admin assigné > admins credits.manage (incl. super-admins).
      */
     private function resolveReimbursementRecipients(User $client): array
     {
@@ -604,8 +1062,26 @@ class CreanceController extends Controller
             }
         }
 
+        // Fallback : tous les admins capables de gérer le module crédit.
+        // ⚠️ Les sous-admins doivent uniquement recevoir les emails des PRO qui leur sont assignés.
+        // Donc: on exclut les rôles sous-admin (support/finance/commercial) du fallback.
+        // (Les super-admins et les emails configurés restent prioritaires.)
         return User::whereHas('role', function ($query) {
-            $query->where('is_super_admin', true);
+            $query
+                ->where('is_super_admin', true)
+                ->orWhere(function ($q2) {
+                    $q2
+                        ->whereNotIn('slug', [
+                            RoleEnum::SUPPORT_ADMIN,
+                            RoleEnum::FINANCE_ADMIN,
+                            RoleEnum::COMMERCIAL_ADMIN,
+                        ])
+                        ->whereHas('permissions', function ($q) {
+                            $q
+                                ->where('slug', 'credits.manage')
+                                ->whereIn('role_permissions.access_level', ['oui', 'limité']);
+                        });
+                });
         })
             ->whereNotNull('email')
             ->pluck('email')

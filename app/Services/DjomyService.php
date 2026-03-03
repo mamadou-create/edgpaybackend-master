@@ -10,6 +10,7 @@ use App\Interfaces\DjomyServiceInterface;
 use App\Models\Payment;
 use App\Models\PaymentLink;
 use App\Models\User;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Auth;
@@ -34,8 +35,26 @@ class DjomyService implements DjomyServiceInterface
         $this->partnerDomain = config('services.djomy.domain', request()->getHost() ?? 'edgpayapi.mdinggn.com');
         $this->returnUrl = config('services.djomy.return_url');
         $this->cancelUrl = config('services.djomy.cancel_url');
-        $this->accessToken = cache('djomy_access_token');
+        // ⚠️ Ne pas lire le cache ici: selon la config, le cache peut être en DB
+        // (et donc requérir une connexion MySQL au boot).
+        $this->accessToken = null;
         $this->user = Auth::guard()->user();
+    }
+
+    private function loadAccessTokenFromCache(): void
+    {
+        if (!empty($this->accessToken)) {
+            return;
+        }
+
+        try {
+            $cached = Cache::get('djomy_access_token');
+            if (is_string($cached) && $cached !== '') {
+                $this->accessToken = $cached;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Djomy token cache read failed', ['error' => $e->getMessage()]);
+        }
     }
 
     /**
@@ -79,6 +98,10 @@ class DjomyService implements DjomyServiceInterface
         $url = "{$this->baseUrl}{$endpoint}";
 
         try {
+            if ($withAuth && !$this->accessToken) {
+                $this->loadAccessTokenFromCache();
+            }
+
             if ($withAuth && !$this->accessToken) {
                 $authResult = $this->authenticate();
                 if (!$authResult['success']) {
@@ -153,7 +176,12 @@ class DjomyService implements DjomyServiceInterface
 
             if ($response->successful() && isset($json['data']['accessToken'])) {
                 $this->accessToken = $json['data']['accessToken'];
-                cache(['djomy_access_token' => $this->accessToken], $json['data']['expiresIn'] ?? 3600);
+
+                try {
+                    Cache::put('djomy_access_token', $this->accessToken, $json['data']['expiresIn'] ?? 3600);
+                } catch (\Throwable $e) {
+                    Log::warning('Djomy token cache write failed', ['error' => $e->getMessage()]);
+                }
 
                 Log::info('Djomy authentication successful', [
                     'expires_in' => $json['data']['expiresIn'] ?? 3600

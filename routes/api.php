@@ -515,6 +515,9 @@ Route::prefix('v1')->middleware(['auth:api', 'credit.profile'])->group(function 
     // Mes créances
     Route::get('mes-creances', [CreanceController::class, 'mesCreances']);
 
+    // Résumé global (toutes créances) — montants par statut
+    Route::get('mes-creances/resume', [CreanceController::class, 'mesCreancesResume']);
+
     // Historique transactions (client)
     Route::get('mes-creances/transactions', [CreanceController::class, 'mesTransactions']);
 
@@ -558,6 +561,11 @@ Route::prefix('v1')->middleware(['auth:api', 'check-permission:credits.manage'])
         [CreanceController::class, 'validerPaiementBatch']
     )->middleware('throttle:15,1');
 
+    // Rejet groupé : rejette toutes les transactions en_attente d'une même soumission
+    Route::post('creances/transactions/batch/{idempotencyKey}/rejeter',
+        [CreanceController::class, 'rejeterPaiementBatch']
+    )->middleware('throttle:15,1');
+
     Route::post('creances/transactions/{id}/rejeter',
         [CreanceController::class, 'rejeterPaiement']
     )->middleware('throttle:30,1');
@@ -575,11 +583,18 @@ Route::prefix('v1/risk')->middleware(['auth:api', 'check-permission:credits.mana
     Route::get('dashboard',         [RiskDashboardController::class, 'overview']);
     Route::get('distribution',      [RiskDashboardController::class, 'distributionScores']);
     Route::get('top-clients',       [RiskDashboardController::class, 'topClients']);
+    Route::get('clients',           [RiskDashboardController::class, 'clients']);
     Route::get('clients-risque',    [RiskDashboardController::class, 'clientsARisque']);
 
     // Anomalies
     Route::get('anomalies',                      [RiskDashboardController::class, 'anomalies']);
     Route::post('anomalies/{id}/resoudre',       [RiskDashboardController::class, 'resoudreAnomalie']);
+
+    // Résolution en masse (utile après déblocage manuel)
+    Route::post(
+        'clients/{userId}/anomalies/resoudre-critiques',
+        [RiskDashboardController::class, 'resoudreAnomaliesCritiquesClient']
+    );
 
     // Profil client
     Route::get('clients/{userId}/profil',        [RiskDashboardController::class, 'profilClient']);

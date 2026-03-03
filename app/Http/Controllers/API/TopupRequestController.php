@@ -13,6 +13,7 @@ use App\Http\Requests\TopupRequest\UpdateStatusRequest;
 use App\Http\Requests\TopupRequest\UpdateTopupRequestRequest;
 use App\Http\Resources\TopupRequestResource;
 use App\Interfaces\TopupRequestRepositoryInterface;
+use App\Enums\RoleEnum;
 use App\Models\User;
 use App\Services\TopupRequestService;
 use App\Services\WalletService;
@@ -403,25 +404,6 @@ class TopupRequestController extends Controller
                 }
 
                 $updatedTopupRequest = $this->topupRequestRepository->getByID($id);
-
-                // Notifier le demandeur (client PRO) par email - best effort.
-                try {
-                    @set_time_limit(30);
-                    if ($updatedTopupRequest) {
-                        $updatedTopupRequest->loadMissing(['pro']);
-                        $requester = $updatedTopupRequest->pro;
-                        $approver = Auth::guard()->user();
-
-                        if ($requester instanceof User && !empty($requester->email)) {
-                            Mail::to($requester->email)->send(
-                                new TopupRequestApprovedMail($updatedTopupRequest, $requester, $approver)
-                            );
-                        }
-                    }
-                } catch (\Throwable $mailException) {
-                    Log::error('Erreur envoi email (recharge approuvée - strict): ' . $mailException->getMessage());
-                }
-
                 return ApiResponseClass::sendResponse(
                     [
                         'commande' => new TopupRequestResource($updatedTopupRequest),
@@ -638,24 +620,6 @@ class TopupRequestController extends Controller
         }
 
         $updatedTopupRequest = $this->topupRequestRepository->getByID($id);
-
-        // Notifier le demandeur (client PRO) par email - best effort.
-        try {
-            @set_time_limit(30);
-            if ($updatedTopupRequest) {
-                $updatedTopupRequest->loadMissing(['pro']);
-                $requester = $updatedTopupRequest->pro;
-
-                if ($requester instanceof User && !empty($requester->email)) {
-                    Mail::to($requester->email)->send(
-                        new TopupRequestApprovedMail($updatedTopupRequest, $requester, $actor)
-                    );
-                }
-            }
-        } catch (\Throwable $mailException) {
-            Log::error('Erreur envoi email (recharge approuvée - approve shortcut): ' . $mailException->getMessage());
-        }
-
         return ApiResponseClass::sendResponse(
             [
                 'commande' => new TopupRequestResource($updatedTopupRequest),
@@ -769,7 +733,7 @@ class TopupRequestController extends Controller
     /**
      * Résout les destinataires admin pour les demandes de recharge.
      * Utilise l'email enregistré dans la table users (email de création de compte).
-     * Priorité : sous-admin assigné au PRO > tous les super-admins.
+     * Priorité : sous-admin assigné au PRO > admins (hors sous-admin) capables de traiter les recharges.
      */
     private function resolveTopupAdminRecipients(User $requester): array
     {
@@ -781,9 +745,25 @@ class TopupRequestController extends Controller
             }
         }
 
-        // Sinon, notifier tous les super-admins qui ont un email enregistré.
+        // Sinon, notifier les admins capables de traiter les recharges.
+        // ⚠️ Les sous-admins doivent uniquement recevoir les emails des PRO qui leur sont assignés.
+        // Donc: on exclut les rôles sous-admin du fallback (support/finance/commercial).
         return User::whereHas('role', function ($query) {
-            $query->where('is_super_admin', true);
+            $query
+                ->where('is_super_admin', true)
+                ->orWhere(function ($q2) {
+                    $q2
+                        ->whereNotIn('slug', [
+                            RoleEnum::SUPPORT_ADMIN,
+                            RoleEnum::FINANCE_ADMIN,
+                            RoleEnum::COMMERCIAL_ADMIN,
+                        ])
+                        ->whereHas('permissions', function ($q) {
+                            $q
+                                ->whereIn('slug', ['transactions.validate_pending', 'finances.manual_credit_debit'])
+                                ->whereIn('role_permissions.access_level', ['oui', 'limité']);
+                        });
+                });
         })
             ->whereNotNull('email')
             ->pluck('email')

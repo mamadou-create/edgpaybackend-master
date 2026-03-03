@@ -6,18 +6,27 @@ use App\Models\CreditProfile;
 use App\Models\Creance;
 use App\Models\CreanceTransaction;
 use App\Models\LedgerEntry;
+use App\Models\AnomalyFlag;
+use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
+use App\Models\Wallet;
+use App\Models\WalletTransaction;
 use App\Jobs\SendCreanceReimbursementBatchSubmittedMailJob;
 use App\Jobs\SendCreanceReimbursementSubmittedMailJob;
 use App\Jobs\SendCreanceBatchValidatedReceiptMailJob;
 use App\Jobs\SendCreanceValidatedReceiptMailJob;
+use App\Jobs\SendCreanceRejectedMailJob;
+use App\Jobs\SendCreanceBatchRejectedMailJob;
+use App\Mail\CreanceReimbursementBatchSubmittedMail;
+use App\Mail\CreanceReimbursementSubmittedMail;
 use App\Services\AnomalyDetectionService;
 use App\Services\AuditLogService;
 use App\Services\CreanceService;
 use App\Services\FinancialLedgerService;
 use App\Services\RiskScoringService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -39,6 +48,166 @@ class CreditModuleTest extends TestCase
 
     private User $admin;
     private User $clientPro;
+
+    /** @test */
+    public function test_rejeter_paiement_batch_success(): void
+    {
+        Queue::fake();
+
+        // Super admin role pour bypass check-permission:credits.manage
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+
+        $admin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'is_pro' => false,
+        ]);
+
+        $client = User::factory()->create(['is_pro' => true]);
+        CreditProfile::updateOrCreate(
+            ['user_id' => $client->id],
+            [
+                'credit_limite' => 500000,
+                'credit_disponible' => 500000,
+                'score_fiabilite' => 60,
+                'niveau_risque' => 'moyen',
+                'est_bloque' => false,
+                'total_encours' => 0,
+            ]
+        );
+
+        // Créer 2 créances impayées
+        $this->creanceService->creerCreance(
+            $client,
+            10000,
+            'Batch creance 1 (rejeter)',
+            now()->addDays(30)->toDateString(),
+            $admin
+        );
+        $this->creanceService->creerCreance(
+            $client,
+            15000,
+            'Batch creance 2 (rejeter)',
+            now()->addDays(30)->toDateString(),
+            $admin
+        );
+
+        $batchKey = Str::uuid()->toString();
+
+        // Soumettre un paiement global (créé 2 transactions en_attente avec la même batch_key)
+        $result = $this->creanceService->soumettreRemboursTotal(
+            $client,
+            null,
+            null,
+            'paiement batch rejeter test',
+            $batchKey
+        );
+
+        $this->assertIsArray($result);
+        $this->assertArrayHasKey('transactions', $result);
+        $this->assertCount(2, $result['transactions']);
+
+        $txIds = collect($result['transactions'])->map(fn ($tx) => (string) $tx['id'])->all();
+
+        $this->actingAs($admin);
+        $res = $this->postJson('/api/v1/creances/transactions/batch/' . $batchKey . '/rejeter', [
+            'motif' => 'Motif test',
+        ]);
+
+        $res
+            ->assertStatus(200)
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.batch_key', $batchKey)
+            ->assertJsonPath('data.rejected_count', 2);
+
+        $this->assertEquals(
+            2,
+            CreanceTransaction::query()->whereIn('id', $txIds)->where('statut', 'rejete')->count()
+        );
+
+        Queue::assertPushed(SendCreanceBatchRejectedMailJob::class, 1);
+        Queue::assertPushed(SendCreanceBatchRejectedMailJob::class, function ($job) use ($client, $batchKey) {
+            return (string) $job->clientId === (string) $client->id
+                && (string) $job->batchKey === (string) $batchKey;
+        });
+    }
+
+    /** @test */
+    public function test_rejeter_paiement_simple_dispatch_email_client(): void
+    {
+        Queue::fake();
+
+        // Super admin role pour bypass check-permission:credits.manage
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+
+        $admin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'is_pro' => false,
+        ]);
+
+        $client = User::factory()->create([
+            'is_pro' => true,
+            'email' => 'client-rejet@example.test',
+        ]);
+        CreditProfile::updateOrCreate(
+            ['user_id' => $client->id],
+            [
+                'credit_limite' => 500000,
+                'credit_disponible' => 500000,
+                'score_fiabilite' => 60,
+                'niveau_risque' => 'moyen',
+                'est_bloque' => false,
+                'total_encours' => 0,
+            ]
+        );
+
+        $creance = $this->creanceService->creerCreance(
+            $client,
+            20000,
+            'Creance rejet simple',
+            now()->addDays(30)->toDateString(),
+            $admin
+        );
+
+        $tx = $this->creanceService->soumettreRembours(
+            $client,
+            $creance,
+            20000,
+            'paiement_total'
+        );
+
+        $this->assertEquals('en_attente', $tx->statut);
+
+        $this->actingAs($admin);
+        $res = $this->postJson('/api/v1/creances/transactions/' . $tx->id . '/rejeter', [
+            'motif' => 'Preuve invalide',
+        ]);
+
+        $res->assertStatus(200)->assertJsonPath('success', true);
+
+        $this->assertDatabaseHas('creance_transactions', [
+            'id' => (string) $tx->id,
+            'statut' => 'rejete',
+        ]);
+
+        Queue::assertPushed(SendCreanceRejectedMailJob::class, 1);
+        Queue::assertPushed(SendCreanceRejectedMailJob::class, function ($job) use ($tx) {
+            return (string) $job->transactionId === (string) $tx->id;
+        });
+    }
     private AuditLogService $auditService;
     private CreanceService $creanceService;
     private RiskScoringService $scoringService;
@@ -315,6 +484,144 @@ class CreditModuleTest extends TestCase
     }
 
     /** @test */
+    public function test_admin_peut_resoudre_anomalies_critiques_client_en_masse(): void
+    {
+        // Super admin role pour bypass check-permission:credits.manage (middleware).
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+
+        $admin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'is_pro' => false,
+        ]);
+
+        $client = User::factory()->create(['is_pro' => true]);
+        CreditProfile::updateOrCreate(
+            ['user_id' => $client->id],
+            [
+                'credit_limite' => 500000,
+                'credit_disponible' => 500000,
+                'score_fiabilite' => 60,
+                'niveau_risque' => 'moyen',
+                'est_bloque' => true,
+                'total_encours' => 0,
+                'motif_blocage' => 'Blocage automatique : 3 anomalies critiques non résolues.',
+            ]
+        );
+
+        // 3 anomalies critiques non résolues
+        for ($i = 0; $i < 3; $i++) {
+            AnomalyFlag::create([
+                'user_id' => $client->id,
+                'type_anomalie' => 'montant_anormalement_eleve',
+                'niveau' => 'critique',
+                'description' => 'Test anomalie critique',
+                'resolved' => false,
+            ]);
+        }
+
+        $this->assertEquals(3, AnomalyFlag::query()
+            ->where('user_id', $client->id)
+            ->where('niveau', 'critique')
+            ->where('resolved', false)
+            ->count());
+
+        $this->actingAs($admin);
+        $response = $this->postJson(
+            '/api/v1/risk/clients/' . $client->id . '/anomalies/resoudre-critiques',
+            ['note' => 'Résolution admin (test)']
+        );
+
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.resolved', 3)
+            ->assertJsonPath('data.auto_unblocked', true);
+
+        $this->assertDatabaseHas('credit_profiles', [
+            'user_id' => $client->id,
+            'est_bloque' => false,
+            'motif_blocage' => null,
+        ]);
+
+        $this->assertEquals(0, AnomalyFlag::query()
+            ->where('user_id', $client->id)
+            ->where('niveau', 'critique')
+            ->where('resolved', false)
+            ->count());
+
+        $this->assertDatabaseHas('anomaly_flags', [
+            'user_id' => $client->id,
+            'niveau' => 'critique',
+            'resolved' => true,
+            'note_resolution' => 'Résolution admin (test)',
+        ]);
+    }
+
+    /** @test */
+    public function test_admin_peut_lister_les_comptes_credit_avec_impaye_et_limite(): void
+    {
+        // Super admin role pour bypass check-permission:credits.manage (middleware).
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+
+        $admin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'is_pro' => false,
+        ]);
+
+        $client = User::factory()->create(['is_pro' => true]);
+        CreditProfile::updateOrCreate(
+            ['user_id' => $client->id],
+            [
+                'credit_limite' => 30_000_000,
+                'credit_disponible' => 30_000_000,
+                'score_fiabilite' => 60,
+                'niveau_risque' => 'moyen',
+                'est_bloque' => false,
+                'total_encours' => 0,
+            ]
+        );
+
+        // Crée une créance impayée (le service met à jour total_encours / credit_disponible)
+        $this->creanceService->creerCreance(
+            $client,
+            15_000_000,
+            'Créance impayée (test)',
+            now()->addDays(30)->toDateString(),
+            $admin
+        );
+
+        $res = $this->actingAs($admin)->getJson('/api/v1/risk/clients?per_page=50');
+        $res->assertOk();
+        $res->assertJsonPath('success', true);
+
+        $items = $res->json('data.data');
+        $this->assertIsArray($items);
+        $this->assertNotEmpty($items);
+
+        $found = collect($items)->first(fn($it) => (string) data_get($it, 'user.id') === (string) $client->id);
+        $this->assertNotNull($found);
+
+        $this->assertArrayHasKey('credit_limite', $found);
+        $this->assertArrayHasKey('total_encours', $found);
+        $this->assertGreaterThan(0, (float) $found['credit_limite']);
+        $this->assertGreaterThan(0, (float) $found['total_encours']);
+    }
+
+    /** @test */
     public function test_endpoint_mes_creances_retourne_profil(): void
     {
         $this->clientPro->creditProfile()->update(['total_encours' => 5000]);
@@ -327,12 +634,84 @@ class CreditModuleTest extends TestCase
     }
 
     /** @test */
+    public function test_endpoint_mes_creances_resume_retourne_totaux_par_statut(): void
+    {
+        // Créer 2 créances pour le client, avec statuts différents.
+        $c1 = $this->creanceService->creerCreance(
+            $this->clientPro,
+            10_000,
+            'Creance resume 1',
+            now()->addDays(10)->toDateString(),
+            $this->admin
+        );
+        $c2 = $this->creanceService->creerCreance(
+            $this->clientPro,
+            20_000,
+            'Creance resume 2',
+            now()->addDays(20)->toDateString(),
+            $this->admin
+        );
+
+        // Forcer un statut "en_retard" pour en avoir au moins 2.
+        $c2->update(['statut' => 'en_retard']);
+
+        $this->actingAs($this->clientPro);
+        $res = $this->getJson('/api/v1/mes-creances/resume');
+
+        $res->assertOk();
+        $res->assertJsonPath('success', true);
+
+        $rows = $res->json('data');
+        $this->assertIsArray($rows);
+
+        // Doit contenir au moins une ligne pour "en_attente" (statut par défaut à la création)
+        // et une pour "en_retard" (qu'on vient de forcer).
+        $statuts = collect($rows)->pluck('statut')->all();
+        $this->assertContains('en_attente', $statuts);
+        $this->assertContains('en_retard', $statuts);
+
+        // Vérifie la structure attendue des totaux.
+        $first = $rows[0] ?? null;
+        $this->assertIsArray($first);
+        $this->assertArrayHasKey('statut', $first);
+        $this->assertArrayHasKey('nb', $first);
+        $this->assertArrayHasKey('total_restant', $first);
+    }
+
+    /** @test */
+    public function test_compte_bloque_peut_consulter_creances_mais_pas_payer(): void
+    {
+        $this->clientPro->creditProfile->update([
+            'est_bloque' => true,
+            'motif_blocage' => 'Blocage automatique : 3 anomalies critiques non résolues.',
+        ]);
+
+        $this->actingAs($this->clientPro);
+
+        // Lecture seule autorisée
+        $response = $this->getJson('/api/v1/mes-creances');
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('success', true)
+            ->assertJsonStructure(['success', 'data', 'credit_profile'])
+            ->assertJsonPath('credit_profile.est_bloque', true);
+
+        // Action sensible toujours interdite
+        $payerTotal = $this->postJson('/api/v1/mes-creances/payer-total', []);
+        $payerTotal
+            ->assertStatus(403)
+            ->assertJsonPath('success', false);
+    }
+
+    /** @test */
     public function test_endpoint_payer_total_dispatch_un_seul_job_email_batch(): void
     {
-        Queue::fake();
+        Mail::fake();
 
         // Forcer une liste de destinataires admin pour garantir le dispatch.
         config(['edgpay.credit.reimbursement_notify_emails' => ['admin@example.test']]);
+        // En tests on veut un envoi immédiat pour pouvoir asserter sur Mail.
+        config(['edgpay.credit.reimbursement_mail_mode' => 'sync']);
 
         // Créer 2 créances impayées pour que la soumission globale génère plusieurs transactions.
         $this->creanceService->creerCreance(
@@ -362,14 +741,440 @@ class CreditModuleTest extends TestCase
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.batch_key', $batchKey);
 
-        Queue::assertPushed(SendCreanceReimbursementBatchSubmittedMailJob::class, 1);
-        Queue::assertPushed(SendCreanceReimbursementBatchSubmittedMailJob::class, function ($job) use ($batchKey) {
-            return (string) $job->clientId === (string) $this->clientPro->id
-                && (string) $job->batchKey === (string) $batchKey;
+        Mail::assertSent(CreanceReimbursementBatchSubmittedMail::class, 1);
+        Mail::assertSent(CreanceReimbursementBatchSubmittedMail::class, function ($mailable) use ($batchKey) {
+            return $mailable->hasTo('admin@example.test')
+                && (string) $mailable->batchKey === (string) $batchKey
+                && (string) $mailable->client->id === (string) $this->clientPro->id;
         });
 
         // S'assurer qu'on ne fait plus un email par transaction pour payer-total.
-        Queue::assertNotPushed(SendCreanceReimbursementSubmittedMailJob::class);
+        Mail::assertNotSent(CreanceReimbursementSubmittedMail::class);
+    }
+
+    /** @test */
+    public function test_endpoint_payer_creance_envoie_un_email_soumission(): void
+    {
+        Mail::fake();
+        config(['edgpay.credit.reimbursement_notify_emails' => ['admin@example.test']]);
+        config(['edgpay.credit.reimbursement_mail_mode' => 'sync']);
+
+        $creance = $this->creanceService->creerCreance(
+            $this->clientPro,
+            20000,
+            'Creance (payer simple test)',
+            now()->addDays(30)->toDateString(),
+            $this->admin
+        );
+
+        $this->actingAs($this->clientPro);
+        $response = $this
+            ->withHeader('X-Idempotency-Key', Str::uuid()->toString())
+            ->postJson(
+                '/api/v1/creances/' . $creance->id . '/payer',
+                [
+                    'montant' => 5000,
+                    'type' => 'paiement_partiel',
+                    'notes' => 'test mail soumission',
+                ]
+            );
+
+        $response
+            ->assertStatus(201)
+            ->assertJsonPath('success', true);
+
+        Mail::assertSent(CreanceReimbursementSubmittedMail::class, 1);
+        Mail::assertSent(CreanceReimbursementSubmittedMail::class, function ($mailable) use ($creance) {
+            return $mailable->hasTo('admin@example.test')
+                && (string) $mailable->client->id === (string) $this->clientPro->id
+                && (string) $mailable->creance->id === (string) $creance->id;
+        });
+    }
+
+    /** @test */
+    public function test_surpaiement_payer_creance_credite_avoir_wallet(): void
+    {
+        Mail::fake();
+        Queue::fake();
+
+        $creance = $this->creanceService->creerCreance(
+            $this->clientPro,
+            10000,
+            'Creance (surpaiement test)',
+            now()->addDays(30)->toDateString(),
+            $this->admin
+        );
+
+        $this->assertDatabaseMissing('wallets', [
+            'user_id' => (string) $this->clientPro->id,
+        ]);
+
+        $this->actingAs($this->clientPro);
+        $res = $this
+            ->withHeader('X-Idempotency-Key', Str::uuid()->toString())
+            ->postJson('/api/v1/creances/' . $creance->id . '/payer', [
+                'montant' => 15000,
+                'type' => 'paiement_partiel',
+                'notes' => 'surpaiement -> avoir',
+            ]);
+
+        $res
+            ->assertStatus(201)
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('avoir_montant', 5000);
+
+        $txId = (string) $res->json('data.id');
+        $this->assertNotEmpty($txId);
+
+        $this->assertDatabaseHas('creance_transactions', [
+            'id' => $txId,
+            'type' => 'paiement_total',
+            'montant' => '10000.00',
+            'user_id' => (string) $this->clientPro->id,
+            'creance_id' => (string) $creance->id,
+        ]);
+
+        $wallet = Wallet::query()->where('user_id', $this->clientPro->id)->first();
+        $this->assertNotNull($wallet);
+        $this->assertEquals(5000, (int) $wallet->cash_available);
+
+        $this->assertDatabaseHas('wallet_transactions', [
+            'wallet_id' => (string) $wallet->id,
+            'user_id' => (string) $this->clientPro->id,
+            'type' => 'credit_note',
+            'amount' => 5000,
+            'reference' => 'credit_note_overpay_creance_tx:' . $txId,
+        ]);
+
+        $this->clientPro->refresh();
+        $this->assertEquals(5000, (int) $this->clientPro->solde_portefeuille);
+    }
+
+    /** @test */
+    public function test_surpaiement_payer_total_credite_avoir_wallet(): void
+    {
+        Mail::fake();
+        Queue::fake();
+
+        $this->creanceService->creerCreance(
+            $this->clientPro,
+            10000,
+            'Creance 1 (surpaiement payer-total)',
+            now()->addDays(30)->toDateString(),
+            $this->admin
+        );
+        $this->creanceService->creerCreance(
+            $this->clientPro,
+            15000,
+            'Creance 2 (surpaiement payer-total)',
+            now()->addDays(30)->toDateString(),
+            $this->admin
+        );
+
+        $batchKey = Str::uuid()->toString();
+
+        $this->actingAs($this->clientPro);
+        $res = $this
+            ->withHeader('X-Idempotency-Key', $batchKey)
+            ->postJson('/api/v1/mes-creances/payer-total', [
+                'montant' => 30000,
+                'notes' => 'surpaiement payer-total -> avoir',
+            ]);
+
+        $res
+            ->assertStatus(201)
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.batch_key', $batchKey)
+            ->assertJsonPath('data.avoir_montant', 5000);
+
+        $wallet = Wallet::query()->where('user_id', $this->clientPro->id)->first();
+        $this->assertNotNull($wallet);
+        $this->assertEquals(5000, (int) $wallet->cash_available);
+
+        $this->assertDatabaseHas('wallet_transactions', [
+            'wallet_id' => (string) $wallet->id,
+            'user_id' => (string) $this->clientPro->id,
+            'type' => 'credit_note',
+            'amount' => 5000,
+            'reference' => 'credit_note_overpay_creance_batch:' . $batchKey,
+        ]);
+
+        $this->clientPro->refresh();
+        $this->assertEquals(5000, (int) $this->clientPro->solde_portefeuille);
+    }
+
+    /** @test */
+    public function test_admin_peut_valider_transaction_surpaiement_en_creditant_avoir(): void
+    {
+        Mail::fake();
+        Queue::fake();
+
+        // Super admin pour bypass les checks d'assignation.
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+
+        $superAdmin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'is_pro' => false,
+        ]);
+
+        $creance = $this->creanceService->creerCreance(
+            $this->clientPro,
+            10000,
+            'Creance (admin validate surpaiement test)',
+            now()->addDays(30)->toDateString(),
+            $superAdmin
+        );
+
+        $this->assertDatabaseMissing('wallets', [
+            'user_id' => (string) $this->clientPro->id,
+        ]);
+
+        // Simuler une ancienne transaction soumise avec un montant > restant.
+        $tx = CreanceTransaction::create([
+            'creance_id' => $creance->id,
+            'user_id' => $this->clientPro->id,
+            'montant' => 15000,
+            'montant_avant' => 10000,
+            'montant_apres' => -5000,
+            'type' => 'paiement_partiel',
+            'statut' => 'en_attente',
+            'notes' => 'soumission ancienne: surpaiement',
+            'idempotency_key' => Str::uuid()->toString(),
+        ]);
+
+        $this->actingAs($superAdmin);
+        $res = $this->postJson('/api/v1/creances/transactions/' . $tx->id . '/valider');
+
+        $res
+            ->assertStatus(200)
+            ->assertJsonPath('success', true);
+
+        $this->assertDatabaseHas('creance_transactions', [
+            'id' => (string) $tx->id,
+            'statut' => 'valide',
+            'montant' => '15000.00',
+            'montant_avant' => '10000.00',
+            'montant_apres' => '0.00',
+        ]);
+
+        $creance->refresh();
+        $this->assertEquals('payee', (string) $creance->statut);
+        $this->assertEquals(0.0, (float) $creance->montant_restant);
+
+        $wallet = Wallet::query()->where('user_id', $this->clientPro->id)->first();
+        $this->assertNotNull($wallet);
+        $this->assertEquals(5000, (int) $wallet->cash_available);
+
+        $this->assertDatabaseHas('wallet_transactions', [
+            'wallet_id' => (string) $wallet->id,
+            'user_id' => (string) $this->clientPro->id,
+            'type' => 'credit_note',
+            'amount' => 5000,
+            'reference' => 'credit_note_overpay_creance_tx:' . (string) $tx->id,
+        ]);
+
+        $this->clientPro->refresh();
+        $this->assertEquals(5000, (int) $this->clientPro->solde_portefeuille);
+    }
+
+    /** @test */
+    public function test_email_reçu_par_admin_ayant_permission_credits_manage_si_aucun_recipient_configure(): void
+    {
+        Mail::fake();
+        config(['edgpay.credit.reimbursement_notify_emails' => []]);
+        config(['edgpay.credit.reimbursement_mail_mode' => 'sync']);
+
+        $perm = Permission::query()->updateOrCreate(
+            ['slug' => 'credits.manage'],
+            [
+                'name' => 'Gérer crédit',
+                'module' => 'Crédit',
+                'description' => 'Permission crédit (tests)',
+            ]
+        );
+
+        $role = Role::query()->create([
+            'name' => 'Admin Crédit (tests)',
+            'slug' => 'admin_credit_test',
+            'description' => 'Rôle test',
+            'is_super_admin' => false,
+        ]);
+        $role->permissions()->attach($perm->id, ['access_level' => 'oui']);
+
+        $creditAdmin = User::factory()->create([
+            'role_id' => $role->id,
+            'email' => 'credit.admin@example.test',
+            'is_pro' => false,
+        ]);
+
+        $creance = $this->creanceService->creerCreance(
+            $this->clientPro,
+            12000,
+            'Creance (notify credits.manage test)',
+            now()->addDays(30)->toDateString(),
+            $this->admin
+        );
+
+        $this->actingAs($this->clientPro);
+        $response = $this
+            ->withHeader('X-Idempotency-Key', Str::uuid()->toString())
+            ->postJson(
+                '/api/v1/creances/' . $creance->id . '/payer',
+                [
+                    'montant' => 2000,
+                    'type' => 'paiement_partiel',
+                ]
+            );
+
+        $response->assertStatus(201);
+
+        Mail::assertSent(CreanceReimbursementSubmittedMail::class, function ($mailable) use ($creditAdmin) {
+            return $mailable->hasTo($creditAdmin->email);
+        });
+    }
+
+    /** @test */
+    public function test_sous_admin_ne_recoit_pas_email_remboursement_si_pro_non_assigne(): void
+    {
+        Mail::fake();
+        config(['edgpay.credit.reimbursement_notify_emails' => []]);
+        config(['edgpay.credit.reimbursement_mail_mode' => 'sync']);
+
+        $perm = Permission::query()->updateOrCreate(
+            ['slug' => 'credits.manage'],
+            [
+                'name' => 'Gérer crédit',
+                'module' => 'Crédit',
+                'description' => 'Permission crédit (tests)',
+            ]
+        );
+
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+        $superAdmin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'email' => 'superadmin@example.test',
+            'is_pro' => false,
+        ]);
+
+        $financeRole = Role::query()->updateOrCreate(
+            ['slug' => 'finance_admin'],
+            [
+                'name' => 'Sous-Admin Finance',
+                'description' => 'Rôle finance (tests)',
+                'is_super_admin' => false,
+            ]
+        );
+        $financeRole->permissions()->syncWithoutDetaching([$perm->id => ['access_level' => 'oui']]);
+
+        $financeAdmin = User::factory()->create([
+            'role_id' => $financeRole->id,
+            'email' => 'finance@example.test',
+            'is_pro' => false,
+        ]);
+
+        $client = User::factory()->create([
+            'is_pro' => true,
+            'assigned_user' => null,
+        ]);
+
+        CreditProfile::updateOrCreate(
+            ['user_id' => $client->id],
+            [
+                'credit_limite' => 500000,
+                'credit_disponible' => 500000,
+                'score_fiabilite' => 60,
+                'niveau_risque' => 'moyen',
+                'est_bloque' => false,
+                'total_encours' => 0,
+            ]
+        );
+
+        $creance = $this->creanceService->creerCreance(
+            $client,
+            12000,
+            'Creance (sub-admin recipient guard test)',
+            now()->addDays(30)->toDateString(),
+            $this->admin
+        );
+
+        $this->actingAs($client);
+        $response = $this
+            ->withHeader('X-Idempotency-Key', Str::uuid()->toString())
+            ->postJson(
+                '/api/v1/creances/' . $creance->id . '/payer',
+                [
+                    'montant' => 2000,
+                    'type' => 'paiement_partiel',
+                ]
+            );
+
+        $response->assertStatus(201);
+
+        Mail::assertSent(CreanceReimbursementSubmittedMail::class, function ($mailable) use ($superAdmin, $financeAdmin) {
+            return $mailable->hasTo($superAdmin->email) && ! $mailable->hasTo($financeAdmin->email);
+        });
+    }
+
+    /** @test */
+    public function test_admin_ne_peut_pas_creer_creance_si_depasse_limite_meme_si_bypass_envoye(): void
+    {
+        // Super admin role pour bypass check-permission:credits.manage (middleware).
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+
+        $admin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'is_pro' => false,
+        ]);
+
+        $client = User::factory()->create(['is_pro' => true]);
+        CreditProfile::updateOrCreate(
+            ['user_id' => $client->id],
+            [
+                'credit_limite' => 500000,
+                'credit_disponible' => 500000,
+                'score_fiabilite' => 60,
+                'niveau_risque' => 'moyen',
+                'est_bloque' => false,
+                'total_encours' => 0,
+            ]
+        );
+
+        $this->actingAs($admin);
+        $response = $this->postJson('/api/v1/creances', [
+            'client_id' => (string) $client->id,
+            'montant' => 600000, // dépasse la limite/disponible
+            'description' => 'Impayé au-delà de la limite',
+            'date_echeance' => now()->addDays(30)->toDateString(),
+            'metadata' => [
+                'taux_interet' => 5,
+                'bypass_credit_limit' => true,
+            ],
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonPath('success', false);
     }
 
     /** @test */

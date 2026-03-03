@@ -10,6 +10,7 @@ use App\Models\CreditProfile;
 use App\Models\LedgerEntry;
 use App\Models\User;
 use App\Services\AnomalyDetectionService;
+use App\Services\AuditLogService;
 use App\Services\FinancialLedgerService;
 use App\Services\RiskScoringService;
 use Illuminate\Http\JsonResponse;
@@ -230,6 +231,53 @@ class RiskDashboardController extends Controller
         return response()->json(['success' => true, 'data' => $clients]);
     }
 
+    // ─── Tous les comptes crédit ───────────────────────────────────────
+
+    /**
+     * GET /risk/clients — Liste paginée de tous les clients avec un compte crédit
+     *
+     * Retourne les infos utiles pour l'admin : montant impayé (total_encours)
+     * et limite de crédit.
+     */
+    public function clients(Request $request): JsonResponse
+    {
+        /** @var User|null $actor */
+        $actor = Auth::user();
+
+        $perPage = (int) ($request->per_page ?? 50);
+        $page = (int) ($request->page ?? 1);
+
+        $cacheKey = ($actor instanceof User && !$this->isSuperAdminUser($actor))
+            ? sprintf('risk.dashboard.clients.actor.%s.%d.%d', $actor->id, $perPage, $page)
+            : sprintf('risk.dashboard.clients.%d.%d', $perPage, $page);
+
+        $clients = Cache::remember($cacheKey, now()->addSeconds(25), function () use ($perPage, $actor) {
+            $q = CreditProfile::with('user:id,display_name,phone,email');
+
+            if ($actor instanceof User && !$this->isSuperAdminUser($actor)) {
+                $q->whereIn('user_id', $this->assignedUserIdsQuery($actor));
+            }
+
+            $p = $q->orderByDesc('total_encours')->paginate($perPage);
+
+            $p->setCollection(
+                $p->getCollection()->map(fn($profile) => [
+                    'user'              => $profile->user,
+                    'score'             => (int) ($profile->score_fiabilite ?? 0),
+                    'niveau_risque'     => $profile->niveau_risque,
+                    'credit_limite'     => $profile->credit_limite,
+                    'credit_disponible' => $profile->credit_disponible,
+                    'total_encours'     => $profile->total_encours,
+                    'taux_utilisation'  => $profile->ratio_endettement,
+                ])
+            );
+
+            return $p;
+        });
+
+        return response()->json(['success' => true, 'data' => $clients]);
+    }
+
     // ─── Anomalies actives ───────────────────────────────────────────────
 
     /**
@@ -274,6 +322,96 @@ class RiskDashboardController extends Controller
 
         $this->anomaly->resoudreAnomalie($anomalie, $request->user(), $data['note'] ?? '');
         return response()->json(['success' => true, 'message' => 'Anomalie résolue.']);
+    }
+
+    /**
+     * POST /risk/clients/{userId}/anomalies/resoudre-critiques — Résoudre toutes les anomalies critiques non résolues d'un client
+     */
+    public function resoudreAnomaliesCritiquesClient(Request $request, string $userId): JsonResponse
+    {
+        /** @var User|null $actor */
+        $actor = Auth::user();
+
+        $data = $request->validate([
+            'note' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $client = User::findOrFail($userId);
+        if ($actor instanceof User && !$this->isSuperAdminUser($actor)) {
+            $this->assertClientIsAssignedOrSuperAdmin($actor, $client);
+        }
+
+        $note = $data['note'] ?? '';
+
+        $txResult = DB::transaction(function () use ($client, $actor, $note) {
+            $anomalies = AnomalyFlag::query()
+                ->where('user_id', $client->id)
+                ->where('niveau', 'critique')
+                ->where('resolved', false)
+                ->lockForUpdate()
+                ->get();
+
+            foreach ($anomalies as $anomalie) {
+                $this->anomaly->resoudreAnomalie($anomalie, $actor, $note);
+            }
+
+            $resolvedCount = $anomalies->count();
+
+            // Si le compte était bloqué automatiquement, et qu'il ne reste plus
+            // d'anomalies critiques non résolues, on débloque le profil.
+            $profil = CreditProfile::query()
+                ->where('user_id', $client->id)
+                ->lockForUpdate()
+                ->first();
+
+            $autoUnblocked = false;
+            if ($profil instanceof CreditProfile) {
+                $remainingCritiques = AnomalyFlag::query()
+                    ->where('user_id', $client->id)
+                    ->where('niveau', 'critique')
+                    ->where('resolved', false)
+                    ->count();
+
+                $motif = (string) ($profil->motif_blocage ?? '');
+                $wasAutoBlocked = $profil->est_bloque
+                    && str_starts_with($motif, 'Blocage automatique');
+
+                if ($wasAutoBlocked && $remainingCritiques === 0) {
+                    $profil->update([
+                        'est_bloque'      => false,
+                        'bloque_jusqu_au' => null,
+                        'motif_blocage'   => null,
+                    ]);
+                    $autoUnblocked = true;
+                }
+            }
+
+            return [
+                'resolved' => $resolvedCount,
+                'auto_unblocked' => $autoUnblocked,
+            ];
+        });
+
+        $resolvedCount = (int) ($txResult['resolved'] ?? 0);
+        $autoUnblocked = (bool) ($txResult['auto_unblocked'] ?? false);
+
+        AuditLogService::log(
+            AuditLogService::ACTION_ANOMALIE_RESOLUE,
+            $client->id,
+            User::class,
+            'succes',
+            null,
+            ['resolved_critiques' => $resolvedCount, 'auto_unblocked' => $autoUnblocked],
+            ['admin_id' => $actor?->id, 'note' => $note]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => $resolvedCount > 0
+                ? "$resolvedCount anomalies critiques résolues."
+                : 'Aucune anomalie critique à résoudre.',
+            'data' => ['resolved' => $resolvedCount, 'auto_unblocked' => $autoUnblocked],
+        ]);
     }
 
     // ─── Profil de risque par client ─────────────────────────────────────
@@ -332,6 +470,33 @@ class RiskDashboardController extends Controller
         }
 
         $profil = $this->scoring->recalculerScore($client, 'recalcul_manuel_admin');
+
+        // Le listing admin (GET /risk/clients) et autres widgets du dashboard
+        // sont mis en cache ~25s. Après un recalcul de score (qui peut ajuster
+        // la limite), on invalide le cache pour éviter une incohérence entre
+        // admin et côté client.
+        try {
+            foreach ([50, 200] as $perPage) {
+                Cache::forget(sprintf('risk.dashboard.clients.%d.%d', $perPage, 1));
+                if ($actor instanceof User && ! $this->isSuperAdminUser($actor)) {
+                    Cache::forget(sprintf('risk.dashboard.clients.actor.%s.%d.%d', $actor->id, $perPage, 1));
+                }
+            }
+
+            foreach ([20, 50] as $perPage) {
+                Cache::forget(sprintf('risk.dashboard.clients_risque.%d.%d', $perPage, 1));
+                if ($actor instanceof User && ! $this->isSuperAdminUser($actor)) {
+                    Cache::forget(sprintf('risk.dashboard.clients_risque.actor.%s.%d.%d', $actor->id, $perPage, 1));
+                }
+            }
+
+            Cache::forget('risk.dashboard.top_clients');
+            if ($actor instanceof User && ! $this->isSuperAdminUser($actor)) {
+                Cache::forget('risk.dashboard.top_clients.actor.' . $actor->id);
+            }
+        } catch (\Throwable) {
+            // Best-effort: ne pas bloquer l'action.
+        }
 
         return response()->json([
             'success' => true,

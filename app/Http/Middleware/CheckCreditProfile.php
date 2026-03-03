@@ -37,6 +37,18 @@ class CheckCreditProfile
         }
 
         if ($profil->estActuellementBloque()) {
+            // Autoriser la consultation (lecture seule) même si le compte est bloqué.
+            // Objectif: laisser le client visualiser ses créances / transactions,
+            // tout en bloquant les actions sensibles (paiements, etc.).
+            $actionMethod = $request->route()?->getActionMethod();
+            $isReadOnlyCreditView = $request->isMethod('GET')
+                && in_array($actionMethod, ['mesCreances', 'mesCreanceDetail', 'mesTransactions'], true);
+
+            if ($isReadOnlyCreditView) {
+                $request->attributes->set('credit_account_blocked', true);
+                return $next($request);
+            }
+
             AuditLogService::tentativeInvalide('acces_compte_bloque', [
                 'user_id'       => $user->id,
                 'motif_blocage' => $profil->motif_blocage,
@@ -44,9 +56,9 @@ class CheckCreditProfile
             ]);
 
             return response()->json([
-                'success'       => false,
-                'message'       => 'Compte bloqué : ' . ($profil->motif_blocage ?? 'raison non spécifiée'),
-                'est_bloque'    => true,
+                'success'         => false,
+                'message'         => 'Compte bloqué : ' . ($profil->motif_blocage ?? 'raison non spécifiée'),
+                'est_bloque'      => true,
                 'bloque_jusqu_au' => $profil->bloque_jusqu_au,
             ], 403);
         }

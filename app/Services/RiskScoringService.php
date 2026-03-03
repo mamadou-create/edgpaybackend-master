@@ -6,6 +6,7 @@ use App\Models\CreditProfile;
 use App\Models\CreditScoreHistory;
 use App\Models\User;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -92,6 +93,7 @@ class RiskScoringService
             $nouvelleLimite = $this->calculerNouvelleLimit($profil, $nouveauNiveau);
 
             $scoreAvant = $profil->score_fiabilite;
+            $limiteAvant = (float) $profil->credit_limite;
 
             // Mise à jour profil
             $profil->fill([
@@ -113,6 +115,23 @@ class RiskScoringService
             $this->appliquerReglesBlocage($profil);
 
             $profil->save();
+
+            // Les widgets admin (ex: GET /risk/clients) sont mis en cache.
+            // Quand la limite évolue automatiquement via scoring, on invalide
+            // le cache global (best-effort) pour réduire les incohérences.
+            if ($limiteAvant !== (float) $profil->credit_limite) {
+                try {
+                    foreach ([50, 200] as $perPage) {
+                        Cache::forget(sprintf('risk.dashboard.clients.%d.%d', $perPage, 1));
+                    }
+                    foreach ([20, 50] as $perPage) {
+                        Cache::forget(sprintf('risk.dashboard.clients_risque.%d.%d', $perPage, 1));
+                    }
+                    Cache::forget('risk.dashboard.top_clients');
+                } catch (\Throwable) {
+                    // Best-effort
+                }
+            }
 
             // Historique
             CreditScoreHistory::create([
