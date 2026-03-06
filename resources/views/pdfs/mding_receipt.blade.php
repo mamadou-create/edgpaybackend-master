@@ -1,3 +1,7 @@
+@php
+    $isBwPrint = ($print_mode ?? null) === 'bw';
+@endphp
+
 <!doctype html>
 <html lang="fr">
 <head>
@@ -8,14 +12,21 @@
             margin: 0;
             size: A5 portrait;
         }
+
+        body {
             margin: 0;
             padding: 0;
             background: #ffffff;
+            font-family: DejaVu Sans, Arial, sans-serif;
         }
 
         /* ─── Header banner ─── */
+        .header-banner {
+            background: #094487;
+            padding: 14px 24px;
             color: #ffffff;
         }
+
         .header-banner table { width: 100%; }
         .header-banner td { vertical-align: middle; }
         .logo-img { height: 40px; width: auto; }
@@ -77,7 +88,7 @@
 
         /* ─── Main content area ─── */
         .content {
-            padding: 18px 24px 14px 24px;
+            padding: 18px 24px 86px 24px;
         }
 
         /* ─── Section heading ─── */
@@ -101,6 +112,7 @@
             border-radius: 6px;
             padding: 10px 14px;
             margin-bottom: 8px;
+            page-break-inside: avoid;
         }
         .info-card table { width: 100%; }
         .info-card td { vertical-align: top; padding: 4px 0; }
@@ -165,6 +177,7 @@
             width: 100%;
             border-collapse: collapse;
             margin-top: 8px;
+            page-break-inside: avoid;
         }
         .details-table td {
             padding: 7px 10px;
@@ -182,6 +195,7 @@
             width: 60%;
             color: #1E293B;
             font-weight: 600;
+            word-break: break-word;
         }
         .details-table tr:last-child td {
             border-bottom: none;
@@ -191,6 +205,7 @@
         .stamp {
             text-align: center;
             margin: 18px 0 8px 0;
+            page-break-inside: avoid;
         }
         .stamp-badge {
             display: inline-block;
@@ -211,31 +226,64 @@
             left: 0;
             right: 0;
             background: #062E5F;
+            padding: 10px 24px;
+            color: #A8C8F0;
+            font-size: 9px;
+        }
+
+        .footer-bar table { width: 100%; }
+        .footer-bar td { vertical-align: middle; }
+        .footer-left { text-align: left; }
+        .footer-right { text-align: right; color: #F8CB3C; font-weight: 600; }
 
         /* ─── Digitized stamp ─── */
         .cachet-img {
             position: fixed;
             right: 18px;
-            bottom: 62px;
-            width: 120px;
+            bottom: 72px;
+            width: 100px;
             height: auto;
-            opacity: 0.35;
+            opacity: 0.28;
         }
-            padding: 10px 24px;
-            color: #A8C8F0;
-            font-size: 9px;
 
-@if(!empty($stamp_data_uri))
-    <img src="{{ $stamp_data_uri }}" class="cachet-img" alt="Cachet">
-@endif
+        /* ─── Optional black & white print mode (pass $print_mode = 'bw') ─── */
+        .bw-mode .header-banner {
+            background: #1F2937 !important;
+            color: #ffffff !important;
         }
-        .footer-bar table { width: 100%; }
-        .footer-bar td { vertical-align: middle; }
-        .footer-left { text-align: left; }
-        .footer-right { text-align: right; color: #F8CB3C; font-weight: 600; }
+        .bw-mode .receipt-subtitle,
+        .bw-mode .amount-label,
+        .bw-mode .footer-left {
+            color: #D1D5DB !important;
+        }
+        .bw-mode .accent-bar,
+        .bw-mode .accent-bar-fallback {
+            background: #4B5563 !important;
+        }
+        .bw-mode .receipt-number,
+        .bw-mode .amount-box,
+        .bw-mode .footer-bar {
+            background: #374151 !important;
+            color: #ffffff !important;
+        }
+        .bw-mode .amount-currency,
+        .bw-mode .footer-right {
+            color: #ffffff !important;
+        }
+        .bw-mode .section-heading {
+            color: #111827 !important;
+            border-bottom-color: #111827 !important;
+        }
+        .bw-mode .stamp-badge {
+            border-color: #111827 !important;
+            color: #111827 !important;
+        }
+        .bw-mode .cachet-img {
+            opacity: 0.18;
+        }
     </style>
 </head>
-<body>
+<body class="{{ $isBwPrint ? 'bw-mode' : '' }}">
 
     {{-- ═══════════════ HEADER BANNER ═══════════════ --}}
     <div class="header-banner">
@@ -363,6 +411,10 @@
         </div>
 
     </div>
+
+    @if(!empty($stamp_data_uri))
+        <img src="{{ $stamp_data_uri }}" class="cachet-img" alt="Cachet">
+    @endif
 
     {{-- ═══════════════ FOOTER ═══════════════ --}}
     <div class="footer-bar">

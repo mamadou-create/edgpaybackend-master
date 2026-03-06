@@ -49,7 +49,6 @@ class CreditModuleTest extends TestCase
     private User $admin;
     private User $clientPro;
 
-    /** @test */
     public function test_rejeter_paiement_batch_success(): void
     {
         Queue::fake();
@@ -138,7 +137,6 @@ class CreditModuleTest extends TestCase
         });
     }
 
-    /** @test */
     public function test_rejeter_paiement_simple_dispatch_email_client(): void
     {
         Queue::fake();
@@ -250,7 +248,6 @@ class CreditModuleTest extends TestCase
 
     // ─── Test 1 : Scoring de base ─────────────────────────────────────────
 
-    /** @test */
     public function test_calcul_niveau_risque(): void
     {
         $this->assertEquals('faible', $this->scoringService->determinerNiveauRisque(80));
@@ -262,7 +259,6 @@ class CreditModuleTest extends TestCase
 
     // ─── Test 2 : Création d'une créance ──────────────────────────────────
 
-    /** @test */
     public function test_creation_creance_reduit_credit_disponible(): void
     {
         $creance = $this->creanceService->creerCreance(
@@ -284,7 +280,6 @@ class CreditModuleTest extends TestCase
         $this->assertEquals(400000, $profil->credit_disponible);
     }
 
-    /** @test */
     public function test_creation_creance_refuse_si_limite_depassee(): void
     {
         $this->expectException(\RuntimeException::class);
@@ -298,7 +293,6 @@ class CreditModuleTest extends TestCase
         );
     }
 
-    /** @test */
     public function test_creation_creance_refuse_si_compte_bloque(): void
     {
         $this->clientPro->creditProfile->update(['est_bloque' => true, 'motif_blocage' => 'Test']);
@@ -316,7 +310,6 @@ class CreditModuleTest extends TestCase
 
     // ─── Test 3 : Ledger immuable ─────────────────────────────────────────
 
-    /** @test */
     public function test_ledger_entry_immutable(): void
     {
         $creance = $this->creanceService->creerCreance(
@@ -335,7 +328,6 @@ class CreditModuleTest extends TestCase
         $entry->update(['montant' => 999]);
     }
 
-    /** @test */
     public function test_ledger_hash_integrite(): void
     {
         $creance = $this->creanceService->creerCreance(
@@ -353,7 +345,6 @@ class CreditModuleTest extends TestCase
 
     // ─── Test 4 : Validation paiement ─────────────────────────────────────
 
-    /** @test */
     public function test_validation_paiement_met_a_jour_creance(): void
     {
         $creance = $this->creanceService->creerCreance(
@@ -386,7 +377,6 @@ class CreditModuleTest extends TestCase
         $this->assertEquals(2, $nb);
     }
 
-    /** @test */
     public function test_validation_paiement_partiel(): void
     {
         $creance = $this->creanceService->creerCreance(
@@ -411,7 +401,6 @@ class CreditModuleTest extends TestCase
         $this->assertEquals(60000, $creanceUpdated->montant_restant);
     }
 
-    /** @test */
     public function test_double_validation_impossible(): void
     {
         $creance = $this->creanceService->creerCreance(
@@ -440,7 +429,6 @@ class CreditModuleTest extends TestCase
 
     // ─── Test 5 : Recalcul score ──────────────────────────────────────────
 
-    /** @test */
     public function test_recalcul_score_apres_paiement(): void
     {
         $profil = $this->clientPro->creditProfile;
@@ -474,7 +462,6 @@ class CreditModuleTest extends TestCase
 
     // ─── Test 6 : API Endpoints ───────────────────────────────────────────
 
-    /** @test */
     public function test_endpoint_dashboard_risk_requiert_admin(): void
     {
         $this->actingAs($this->clientPro);
@@ -483,7 +470,6 @@ class CreditModuleTest extends TestCase
         $this->assertContains($response->status(), [401, 403]);
     }
 
-    /** @test */
     public function test_admin_peut_resoudre_anomalies_critiques_client_en_masse(): void
     {
         // Super admin role pour bypass check-permission:credits.manage (middleware).
@@ -564,7 +550,6 @@ class CreditModuleTest extends TestCase
         ]);
     }
 
-    /** @test */
     public function test_admin_peut_lister_les_comptes_credit_avec_impaye_et_limite(): void
     {
         // Super admin role pour bypass check-permission:credits.manage (middleware).
@@ -621,7 +606,6 @@ class CreditModuleTest extends TestCase
         $this->assertGreaterThan(0, (float) $found['total_encours']);
     }
 
-    /** @test */
     public function test_endpoint_mes_creances_retourne_profil(): void
     {
         $this->clientPro->creditProfile()->update(['total_encours' => 5000]);
@@ -633,7 +617,6 @@ class CreditModuleTest extends TestCase
                  ->assertJsonStructure(['success', 'data', 'credit_profile']);
     }
 
-    /** @test */
     public function test_endpoint_mes_creances_resume_retourne_totaux_par_statut(): void
     {
         // Créer 2 créances pour le client, avec statuts différents.
@@ -678,7 +661,6 @@ class CreditModuleTest extends TestCase
         $this->assertArrayHasKey('total_restant', $first);
     }
 
-    /** @test */
     public function test_compte_bloque_peut_consulter_creances_mais_pas_payer(): void
     {
         $this->clientPro->creditProfile->update([
@@ -703,7 +685,6 @@ class CreditModuleTest extends TestCase
             ->assertJsonPath('success', false);
     }
 
-    /** @test */
     public function test_endpoint_payer_total_dispatch_un_seul_job_email_batch(): void
     {
         Mail::fake();
@@ -752,7 +733,6 @@ class CreditModuleTest extends TestCase
         Mail::assertNotSent(CreanceReimbursementSubmittedMail::class);
     }
 
-    /** @test */
     public function test_endpoint_payer_creance_envoie_un_email_soumission(): void
     {
         Mail::fake();
@@ -791,7 +771,6 @@ class CreditModuleTest extends TestCase
         });
     }
 
-    /** @test */
     public function test_surpaiement_payer_creance_credite_avoir_wallet(): void
     {
         Mail::fake();
@@ -850,7 +829,6 @@ class CreditModuleTest extends TestCase
         $this->assertEquals(5000, (int) $this->clientPro->solde_portefeuille);
     }
 
-    /** @test */
     public function test_surpaiement_payer_total_credite_avoir_wallet(): void
     {
         Mail::fake();
@@ -903,7 +881,6 @@ class CreditModuleTest extends TestCase
         $this->assertEquals(5000, (int) $this->clientPro->solde_portefeuille);
     }
 
-    /** @test */
     public function test_admin_peut_valider_transaction_surpaiement_en_creditant_avoir(): void
     {
         Mail::fake();
@@ -984,7 +961,6 @@ class CreditModuleTest extends TestCase
         $this->assertEquals(5000, (int) $this->clientPro->solde_portefeuille);
     }
 
-    /** @test */
     public function test_email_reçu_par_admin_ayant_permission_credits_manage_si_aucun_recipient_configure(): void
     {
         Mail::fake();
@@ -1040,7 +1016,6 @@ class CreditModuleTest extends TestCase
         });
     }
 
-    /** @test */
     public function test_sous_admin_ne_recoit_pas_email_remboursement_si_pro_non_assigne(): void
     {
         Mail::fake();
@@ -1129,7 +1104,6 @@ class CreditModuleTest extends TestCase
         });
     }
 
-    /** @test */
     public function test_admin_ne_peut_pas_creer_creance_si_depasse_limite_meme_si_bypass_envoye(): void
     {
         // Super admin role pour bypass check-permission:credits.manage (middleware).
@@ -1177,7 +1151,6 @@ class CreditModuleTest extends TestCase
             ->assertJsonPath('success', false);
     }
 
-    /** @test */
     public function test_endpoint_valider_paiement_batch_valide_toutes_les_transactions(): void
     {
         // Super admin role pour bypass check-permission:credits.manage
@@ -1258,7 +1231,6 @@ class CreditModuleTest extends TestCase
         );
     }
 
-    /** @test */
     public function test_endpoint_valider_paiement_batch_dispatch_recu_client(): void
     {
         Queue::fake();

@@ -95,6 +95,15 @@ class DjomyService implements DjomyServiceInterface
      */
     private function makeRequest(string $method, string $endpoint, array $data = [], bool $withAuth = true): array
     {
+        if (empty($this->baseUrl)) {
+            return [
+                'success' => false,
+                'status'  => 500,
+                'message' => 'Passerelle Djomy non configurée (DJOMY_BASE_URL manquante).',
+                'data'    => [],
+            ];
+        }
+
         $url = "{$this->baseUrl}{$endpoint}";
 
         try {
@@ -109,7 +118,10 @@ class DjomyService implements DjomyServiceInterface
                 }
             }
 
-            $http = Http::withHeaders($this->getHeaders($withAuth));
+            $http = Http::withHeaders($this->getHeaders($withAuth))
+                ->connectTimeout(3)
+                ->timeout(8)
+                ->retry(0, 0);
 
             $response = match (strtolower($method)) {
                 'get'    => $http->get($url, $data),
@@ -152,7 +164,15 @@ class DjomyService implements DjomyServiceInterface
      */
     public function authenticate(): array
     {
-
+        if (empty($this->baseUrl)) {
+            Log::error('Djomy Auth Exception', ['error' => 'DJOMY_BASE_URL non configurée dans .env']);
+            return [
+                'success' => false,
+                'status'  => 500,
+                'message' => 'Passerelle Djomy non configurée (DJOMY_BASE_URL manquante).',
+                'data'    => [],
+            ];
+        }
 
         try {
             $url = "{$this->baseUrl}/v1/auth";
@@ -163,18 +183,30 @@ class DjomyService implements DjomyServiceInterface
                 'X-PARTNER-DOMAIN' => $this->partnerDomain,
             ];
 
-            $body = [
-                'clientId' => $this->clientId,
-                'clientSecret' => $this->clientSecret,
-            ];
+            // Selon la doc Djomy, le body de /v1/auth est vide.
+            // Les credentials passent uniquement dans X-API-KEY.
+            $body = new \stdClass(); // encode en {} au lieu de []
 
+            Log::info('Djomy Auth Request', [
+                'url'          => $url,
+                'x_api_key'    => substr($headers['X-API-KEY'], 0, 30) . '...',
+                'partner_domain' => $this->partnerDomain,
+            ]);
 
-
-
-            $response = Http::withHeaders($headers)->post($url, $body);
+            $response = Http::withHeaders($headers)
+                ->connectTimeout(3)
+                ->timeout(8)
+                ->retry(0, 0)
+                ->post($url, []);
             $json = $response->json();
 
-            if ($response->successful() && isset($json['data']['accessToken'])) {
+            Log::info('Djomy Auth Response', [
+                'status'   => $response->status(),
+                'body_raw' => $response->body(),
+                'json'     => $json,
+            ]);
+
+            if (in_array($response->status(), [200, 201]) && isset($json['data']['accessToken'])) {
                 $this->accessToken = $json['data']['accessToken'];
 
                 try {
@@ -332,7 +364,7 @@ class DjomyService implements DjomyServiceInterface
                 'payment_type' => PaymentType::GATEWAY->value,
                 'service_type' =>  $data['serviceType'],
                 'compteur_id' =>  $data['compteurId'],
-                'phone' =>  $data['payerNumber'],
+                'phone' =>  $data['payerNumber'] ?? null,
                 'raw_request' => $data,
                 'metadata' => $data,
                 'user_id' => $this->user->id,
@@ -363,7 +395,7 @@ class DjomyService implements DjomyServiceInterface
                     'success' => false,
                     'status' => $apiResult['status'] ?? 400,
                     'message' => $apiResult['message'] ?? 'Échec de la création du paiement gateway.',
-                    'data' => $apiResult['data'],
+                    'data' => $apiResult['data'] ?? [],
                 ];
             }
 
@@ -423,7 +455,7 @@ class DjomyService implements DjomyServiceInterface
                 'description' => $data['description'],
                 'status' => PaymentStatus::PENDING->value,
                 'payment_type' => PaymentType::GATEWAY->value,
-                'phone' =>  $data['payerNumber'],
+                'phone' =>  $data['payerNumber'] ?? null,
                 'raw_request' => $data,
                 'metadata' => $data,
                 'user_id' => $this->user->id,
@@ -454,7 +486,7 @@ class DjomyService implements DjomyServiceInterface
                     'success' => false,
                     'status' => $apiResult['status'] ?? 400,
                     'message' => $apiResult['message'] ?? 'Échec de la création du paiement gateway.',
-                    'data' => $apiResult['data'],
+                    'data' => $apiResult['data'] ?? [],
                 ];
             }
 
@@ -542,7 +574,7 @@ class DjomyService implements DjomyServiceInterface
                     'success' => true,
                     'status' => 200,
                     'message' => 'Statut Djomy récupéré mais paiement local non trouvé',
-                    'data' => $apiResult['data'],
+                    'data' => $apiResult['data'] ?? [],
                 ];
             }
 
@@ -696,7 +728,7 @@ class DjomyService implements DjomyServiceInterface
                     'success' => true,
                     'status' => 200,
                     'message' => 'Statut Djomy récupéré mais paiement local non trouvé',
-                    'data' => $apiResult['data'],
+                    'data' => $apiResult['data'] ?? [],
                 ];
             }
 
@@ -928,7 +960,7 @@ class DjomyService implements DjomyServiceInterface
                     'success' => true,
                     'status' => 200,
                     'message' => 'Statut Djomy récupéré mais paiement local non trouvé',
-                    'data' => $apiResult['data'],
+                    'data' => $apiResult['data'] ?? [],
                 ];
             }
 

@@ -8,13 +8,14 @@ use App\Models\Role;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Mail;
+use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 class TopupRequestEmailTest extends TestCase
 {
     use RefreshDatabase;
 
-    /** @test */
+    #[Test]
     public function demande_recharge_envoie_un_email_a_un_admin_ayant_permission_validate_pending_sans_config_env(): void
     {
         Mail::fake();
@@ -61,7 +62,7 @@ class TopupRequestEmailTest extends TestCase
         });
     }
 
-    /** @test */
+    #[Test]
     public function un_sous_admin_ne_recoit_pas_les_emails_d_un_pro_non_assigne(): void
     {
         Mail::fake();

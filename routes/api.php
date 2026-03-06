@@ -19,6 +19,7 @@ use App\Http\Controllers\API\RoleController;
 use App\Http\Controllers\API\SmsController;
 use App\Http\Controllers\API\SystemSettingController;
 use App\Http\Controllers\API\TopupRequestController;
+use App\Http\Controllers\API\ClientWalletController;
 use App\Http\Controllers\API\WalletController;
 use App\Http\Controllers\API\WalletTransactionController;
 use App\Http\Controllers\API\WithdrawalRequestController;
@@ -288,6 +289,21 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
         Route::post('/client/postpayment/save-transaction', [DmlController::class, 'savePostPaymentTransaction']);
     });
 
+
+    // ─── Wallet client simple – recharge via Djomy ───────────────
+    Route::prefix('client/wallet')->group(function () {
+        Route::get('/balance',         [ClientWalletController::class, 'balance']);
+        Route::post('/topup/initiate', [ClientWalletController::class, 'initiateTopup']);
+        Route::post('/topup/confirm',  [ClientWalletController::class, 'confirmTopup']);
+        Route::post('/transfer',       [ClientWalletController::class, 'transferToClient']);
+        Route::post('/cashout-pro',    [ClientWalletController::class, 'cashoutAtPro']);
+        Route::post('/pay-edg',        [ClientWalletController::class, 'payEdg']);
+    });
+
+    // ─── Wallet PRO – recharge directe client ────────────────────
+    Route::prefix('pro/wallet')->group(function () {
+        Route::post('/recharge-client', [ClientWalletController::class, 'rechargeClientByPro']);
+    });
 
     Route::prefix('djomy')->group(function () {
         // Payments Djomy

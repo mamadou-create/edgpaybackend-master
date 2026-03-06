@@ -40,8 +40,9 @@ class DmlRepository implements DmlRepositoryInterface
     {
         $verifySsl = (bool) config('services.dml.verify_ssl', true);
 
-        $request = Http::timeout(30)
-            ->retry(3, 100)
+        $request = Http::connectTimeout(3)
+            ->timeout(8)
+            ->retry(0, 0)
             ->acceptJson();
 
         if (!$verifySsl) {
@@ -202,6 +203,7 @@ class DmlRepository implements DmlRepositoryInterface
         $transaction = DmlTransaction::firstOrCreate(
             ['idempotency_key' => $idempotencyKey],
             [
+                'payment_id'        => $data['payment_id'] ?? null,
                 'transaction_type' => 'prepaid',
                 'rst_value'        => $data['rst_value'] ?? null,
                 'amount'           => $amount,
@@ -255,14 +257,21 @@ class DmlRepository implements DmlRepositoryInterface
         }
 
         // Traitement de la réponse via le handler spécialisé (qui mettra à jour la transaction)
-        return $this->handlePrepaidApiResponse($response, $transaction, [
+        $extraData = [
             'rst_value'     => $data['rst_value'] ?? null,
             'amount'        => $amount,
             'code'          => $data['code'] ?? null,
             'customer_name' => $data['name'] ?? null,
             'phone'         => $data['phone'] ?? null,
             'buy_last_date' => $data['buy_last_date'] ?? null,
-        ]);
+        ];
+
+        try {
+            return $this->handlePrepaidApiResponse($response, $transaction, $extraData);
+        } catch (\Throwable $e) {
+            $this->refundTransaction($transaction, $amount, 'Réponse DML prépayée invalide: ' . $e->getMessage());
+            return $this->error('Aucune réponse exploitable de DML (prépayé). Remboursement automatique effectué.', 502);
+        }
     }
 
     /* ============================================================
@@ -303,8 +312,8 @@ class DmlRepository implements DmlRepositoryInterface
         }
 
         $amount = $data['montant'] ?? 0;
-        if (!is_numeric($amount) || $amount <= 0) {
-            return $this->error('Montant invalide', 400);
+        if (!is_numeric($amount) || $amount < 1000) {
+            return $this->error('Montant invalide (minimum 1 000 GNF)', 400);
         }
         $amount = (int) $amount;
 
@@ -318,6 +327,7 @@ class DmlRepository implements DmlRepositoryInterface
         $transaction = DmlTransaction::firstOrCreate(
             ['idempotency_key' => $idempotencyKey],
             [
+                'payment_id'       => $data['payment_id'] ?? null,
                 'transaction_type' => 'postpayment',
                 'rst_code'         => $data['rst_value'] ?? null,
                 'montant'          => $amount,
@@ -383,7 +393,12 @@ class DmlRepository implements DmlRepositoryInterface
             'name'           => $data['name'] ?? null,
         ];
 
-        return $this->handlePostpaidApiResponse($response, $transaction, $extraData);
+        try {
+            return $this->handlePostpaidApiResponse($response, $transaction, $extraData);
+        } catch (\Throwable $e) {
+            $this->refundTransaction($transaction, $amount, 'Réponse DML postpayée invalide: ' . $e->getMessage());
+            return $this->error('Aucune réponse exploitable de DML (postpayé). Remboursement automatique effectué.', 502);
+        }
     }
 
     /* ============================================================
@@ -519,20 +534,26 @@ class DmlRepository implements DmlRepositoryInterface
      ============================================================ */
     private function handlePrepaidApiResponse($response, DmlTransaction $transaction, array $extraData): array
     {
-        $apiData = $response->json();
+        $apiDataRaw = $response->json();
+        $apiData = is_array($apiDataRaw) ? $apiDataRaw : [];
+        $hasValidResponse = !empty($apiData);
         $statusCode = $response->status();
-        $success = $response->successful();
+        $success = $response->successful() && $hasValidResponse;
+        $errorMessage = $hasValidResponse
+            ? ($apiData['message'] ?? 'Erreur inconnue')
+            : 'Aucune réponse exploitable de DML';
 
         Log::debug('📊 DML Repository - Traitement réponse API prépayée', [
             'status_code' => $statusCode,
             'has_data'    => isset($apiData['data']),
+            'has_valid_response' => $hasValidResponse,
         ]);
 
         // Préparer les données à fusionner avec l'existant
         $updateData = [
-            'api_response'  => $apiData,
+            'api_response'  => $hasValidResponse ? $apiData : ['raw_body' => $response->body()],
             'api_status'    => $success ? 'SUCCESS' : 'FAILED',
-            'error_message' => $success ? null : ($apiData['message'] ?? 'Erreur inconnue'),
+            'error_message' => $success ? null : $errorMessage,
         ];
 
         // Extraire les données spécifiques
@@ -553,16 +574,16 @@ class DmlRepository implements DmlRepositoryInterface
         }
 
         // En cas d'échec, on a déjà mis le statut FAILED, mais il faut rembourser
-        $this->refundTransaction($transaction, $extraData['amount'] ?? 0, $apiData['message'] ?? 'Erreur API');
+        $this->refundTransaction($transaction, $extraData['amount'] ?? 0, $errorMessage);
 
         Log::error('❌ API DML Prépayée - Erreur', [
             'status_code' => $statusCode,
-            'error'       => $apiData['message'] ?? 'Erreur inconnue',
+            'error'       => $errorMessage,
         ]);
 
         return [
             'success' => false,
-            'error'   => $apiData['message'] ?? 'Erreur API DML',
+            'error'   => $errorMessage,
             'status'  => $statusCode,
             'data'    => $apiData,
         ];
@@ -574,19 +595,25 @@ class DmlRepository implements DmlRepositoryInterface
      ============================================================ */
     private function handlePostpaidApiResponse($response, DmlTransaction $transaction, array $extraData): array
     {
-        $apiData = $response->json();
+        $apiDataRaw = $response->json();
+        $apiData = is_array($apiDataRaw) ? $apiDataRaw : [];
+        $hasValidResponse = !empty($apiData);
         $statusCode = $response->status();
-        $success = $response->successful();
+        $success = $response->successful() && $hasValidResponse;
+        $errorMessage = $hasValidResponse
+            ? ($apiData['message'] ?? 'Erreur inconnue')
+            : 'Aucune réponse exploitable de DML';
 
         Log::debug('📊 DML Repository - Traitement réponse API postpayée', [
             'status_code' => $statusCode,
             'has_data'    => isset($apiData['data']),
+            'has_valid_response' => $hasValidResponse,
         ]);
 
         $updateData = [
-            'api_response'  => $apiData,
+            'api_response'  => $hasValidResponse ? $apiData : ['raw_body' => $response->body()],
             'api_status'    => $success ? 'SUCCESS' : 'FAILED',
-            'error_message' => $success ? null : ($apiData['message'] ?? 'Erreur inconnue'),
+            'error_message' => $success ? null : $errorMessage,
         ];
 
         $extracted = $this->extractPostpaidApiResponseData($apiData);
@@ -607,16 +634,16 @@ class DmlRepository implements DmlRepositoryInterface
             ];
         }
 
-        $this->refundTransaction($transaction, $extraData['amount'] ?? 0, $apiData['message'] ?? 'Erreur API');
+        $this->refundTransaction($transaction, $extraData['amount'] ?? 0, $errorMessage);
 
         Log::error('❌ API DML Postpayée - Erreur', [
             'status_code' => $statusCode,
-            'error'       => $apiData['message'] ?? 'Erreur inconnue',
+            'error'       => $errorMessage,
         ]);
 
         return [
             'success' => false,
-            'error'   => $apiData['message'] ?? 'Erreur API DML',
+            'error'   => $errorMessage,
             'status'  => $statusCode,
             'data'    => $apiData,
         ];
@@ -737,6 +764,19 @@ class DmlRepository implements DmlRepositoryInterface
      ============================================================ */
     private function refundTransaction(DmlTransaction $transaction, int $amount, string $reason = ''): void
     {
+        if ($amount <= 0) {
+            Log::warning('Remboursement ignoré: montant invalide', [
+                'transaction_id' => $transaction->id,
+                'amount' => $amount,
+                'reason' => $reason,
+            ]);
+            $transaction->update([
+                'api_status'    => 'FAILED',
+                'error_message' => $reason ?: 'Transaction échouée (montant remboursement invalide)'
+            ]);
+            return;
+        }
+
         try {
             $this->walletService->refundPayment($amount, CommissionEnum::EDG, $this->user);
             $transaction->update([

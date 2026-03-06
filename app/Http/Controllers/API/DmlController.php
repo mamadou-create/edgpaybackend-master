@@ -200,7 +200,7 @@ class DmlController extends Controller
             'name' => 'required|string|max:255',
             'device' => 'required|string',
             'amt' => 'required',
-            'montant' => 'required|numeric|min:1',
+            'montant' => 'required|numeric|min:1000',
             'phone' => 'required|string|max:20',
             'total_arrear' => 'required|numeric|min:0',
             'payment_id' => 'sometimes',

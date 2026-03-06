@@ -51,6 +51,30 @@ class SystemSettingSeeder extends Seeder
                 'description' => 'Montant maximum par transaction (en unité monétaire)',
                 'order' => 20,
             ],
+            [
+                'key' => 'pro_gain_percent_on_client_cashout',
+                'value' => '0',
+                'type' => 'float',
+                'group' => 'payments',
+                'description' => 'Pourcentage de gain du PRO sur chaque retrait cash client',
+                'order' => 30,
+            ],
+            [
+                'key' => 'pro_gain_percent_on_client_deposit',
+                'value' => '0',
+                'type' => 'float',
+                'group' => 'payments',
+                'description' => 'Pourcentage de gain du PRO sur chaque dépôt/recharge client',
+                'order' => 31,
+            ],
+            [
+                'key' => 'client_cashout_fee_percent',
+                'value' => '0',
+                'type' => 'float',
+                'group' => 'payments',
+                'description' => 'Pourcentage de frais prélevé sur le client lors d\'un retrait cash',
+                'order' => 32,
+            ],
         ];
 
         foreach ($settings as $setting) {
