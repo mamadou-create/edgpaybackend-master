@@ -90,6 +90,33 @@ class ClientWalletController extends Controller
         return $percent;
     }
 
+    private function getOrCreateIntegerSetting(
+        string $key,
+        string $description,
+        int $order,
+        int $default = 1000000000
+    ): int {
+        $setting = SystemSetting::where('key', $key)->first();
+
+        if (!$setting) {
+            $setting = SystemSetting::create([
+                'key'         => $key,
+                'value'       => (string) $default,
+                'type'        => 'integer',
+                'group'       => 'limits',
+                'description' => $description,
+                'is_active'   => true,
+                'is_editable' => true,
+                'order'       => $order,
+            ]);
+        }
+
+        $raw = preg_replace('/[^\d]/', '', (string) ($setting->value ?? $default));
+        $value = (int) ($raw === '' ? $default : $raw);
+
+        return max(0, $value);
+    }
+
     private function creditProCommission(
         User $pro,
         int $baseAmount,
@@ -372,6 +399,28 @@ class ClientWalletController extends Controller
                 $superAdmin   = $this->getSuperAdmin();
                 $clientWallet = $this->walletService->getWalletByUserId($user->id);
 
+                $maxClientWalletBalance = $this->getOrCreateIntegerSetting(
+                    key: 'max_client_wallet_balance',
+                    description: 'Solde maximum autorisé pour un wallet client',
+                    order: 21,
+                    default: 1000000000
+                );
+
+                $projectedBalance = (int) $clientWallet->cash_available + $amount;
+                if ($projectedBalance > $maxClientWalletBalance) {
+                    DB::rollBack();
+                    return ApiResponseClass::sendError(
+                        "Opération refusée: le solde client dépasserait la limite autorisée ({$maxClientWalletBalance} GNF).",
+                        [
+                            'current_balance' => (int) $clientWallet->cash_available,
+                            'amount' => $amount,
+                            'projected_balance' => $projectedBalance,
+                            'max_client_wallet_balance' => $maxClientWalletBalance,
+                        ],
+                        Response::HTTP_UNPROCESSABLE_ENTITY
+                    );
+                }
+
                 // Transfert : super admin → client
                 // deposit() avec fromUserId débite le super admin ET crédite le client
                 $deposited = $this->walletService->deposit(
@@ -480,6 +529,26 @@ class ClientWalletController extends Controller
             } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
                 $created = $this->walletService->createWalletForUser($recipient->id);
                 $recipientWallet = $created['wallet'];
+            }
+
+            $maxClientWalletBalance = $this->getOrCreateIntegerSetting(
+                key: 'max_client_wallet_balance',
+                description: 'Solde maximum autorisé pour un wallet client',
+                order: 21,
+                default: 1000000000
+            );
+            $projectedRecipientBalance = (int) $recipientWallet->cash_available + $amount;
+            if ($projectedRecipientBalance > $maxClientWalletBalance) {
+                return ApiResponseClass::sendError(
+                    "Opération refusée: le solde du client destinataire dépasserait la limite autorisée ({$maxClientWalletBalance} GNF).",
+                    [
+                        'recipient_current_balance' => (int) $recipientWallet->cash_available,
+                        'amount' => $amount,
+                        'recipient_projected_balance' => $projectedRecipientBalance,
+                        'max_client_wallet_balance' => $maxClientWalletBalance,
+                    ],
+                    Response::HTTP_UNPROCESSABLE_ENTITY
+                );
             }
 
             $available = (int) ($senderWallet->cash_available - $senderWallet->blocked_amount);
@@ -752,6 +821,26 @@ class ClientWalletController extends Controller
             } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
                 $created = $this->walletService->createWalletForUser($client->id);
                 $clientWallet = $created['wallet'];
+            }
+
+            $maxClientWalletBalance = $this->getOrCreateIntegerSetting(
+                key: 'max_client_wallet_balance',
+                description: 'Solde maximum autorisé pour un wallet client',
+                order: 21,
+                default: 1000000000
+            );
+            $projectedClientBalance = (int) $clientWallet->cash_available + $amount;
+            if ($projectedClientBalance > $maxClientWalletBalance) {
+                return ApiResponseClass::sendError(
+                    "Opération refusée: le solde du client dépasserait la limite autorisée ({$maxClientWalletBalance} GNF).",
+                    [
+                        'client_current_balance' => (int) $clientWallet->cash_available,
+                        'amount' => $amount,
+                        'client_projected_balance' => $projectedClientBalance,
+                        'max_client_wallet_balance' => $maxClientWalletBalance,
+                    ],
+                    Response::HTTP_UNPROCESSABLE_ENTITY
+                );
             }
 
             $available = (int) ($proWallet->cash_available - $proWallet->blocked_amount);

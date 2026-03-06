@@ -52,6 +52,14 @@ class SystemSettingSeeder extends Seeder
                 'order' => 20,
             ],
             [
+                'key' => 'max_client_wallet_balance',
+                'value' => '1000000000',
+                'type' => 'integer',
+                'group' => 'limits',
+                'description' => 'Solde maximum autorisé pour un wallet client',
+                'order' => 21,
+            ],
+            [
                 'key' => 'pro_gain_percent_on_client_cashout',
                 'value' => '0',
                 'type' => 'float',
