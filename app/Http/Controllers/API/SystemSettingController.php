@@ -8,6 +8,7 @@ use App\Interfaces\SystemSettingRepositoryInterface;
 use App\Classes\ApiResponseClass;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -18,6 +19,26 @@ class SystemSettingController extends Controller
     public function __construct(SystemSettingRepositoryInterface $systemSettingRepository)
     {
         $this->systemSettingRepository = $systemSettingRepository;
+    }
+
+    private function canManageSystemSettings(Request $request): bool
+    {
+        $user = $request->user();
+
+        if (!$user) {
+            return false;
+        }
+
+        if ($user->isSuperAdmin()) {
+            return true;
+        }
+
+        $roleSlug = (string) ($user->role?->slug ?? '');
+        if (in_array($roleSlug, ['finance_admin', 'support_admin', 'commercial_admin', 'sub_admin', 'admin'], true)) {
+            return true;
+        }
+
+        return $user->hasPermission('system.settings.manage');
     }
 
     /**
@@ -106,6 +127,14 @@ class SystemSettingController extends Controller
     public function updateSetting(Request $request, string $key): JsonResponse
     {
         try {
+            if (!$this->canManageSystemSettings($request)) {
+                return ApiResponseClass::sendError(
+                    'Permission insuffisante pour modifier les paramètres système.',
+                    [],
+                    Response::HTTP_FORBIDDEN
+                );
+            }
+
             $request->validate([
                 'value' => 'required',
             ]);
@@ -133,6 +162,14 @@ class SystemSettingController extends Controller
     {
         DB::beginTransaction();
         try {
+            if (!$this->canManageSystemSettings($request)) {
+                return ApiResponseClass::sendError(
+                    'Permission insuffisante pour modifier les paramètres système.',
+                    [],
+                    Response::HTTP_FORBIDDEN
+                );
+            }
+
             $request->validate([
                 'settings' => 'required|array',
                 'settings.*' => 'required',
@@ -219,6 +256,15 @@ class SystemSettingController extends Controller
     public function destroy(string $id): JsonResponse
     {
         try {
+            $request = request();
+            if (!$this->canManageSystemSettings($request)) {
+                return ApiResponseClass::sendError(
+                    'Permission insuffisante pour supprimer un paramètre système.',
+                    [],
+                    Response::HTTP_FORBIDDEN
+                );
+            }
+
             $setting = $this->systemSettingRepository->getByID($id);
 
             if (!$setting) {

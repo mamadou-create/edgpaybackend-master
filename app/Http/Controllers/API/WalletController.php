@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use App\Classes\ApiResponseClass;
 use App\Enums\CommissionEnum;
+use App\Enums\RoleEnum;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Http\Controllers\Controller;
@@ -16,6 +17,7 @@ use App\Http\Resources\WalletFloatResource;
 use App\Interfaces\WalletRepositoryInterface;
 use App\Mail\TransferSentMail;
 use App\Mail\TransferReceivedMail;
+use App\Models\SystemSetting;
 use App\Models\User;
 use App\Services\WalletService;
 use Illuminate\Support\Facades\Auth;
@@ -32,6 +34,62 @@ class WalletController extends Controller
     ) {
         $this->walletRepository = $walletRepository;
         $this->walletService = $walletService;
+    }
+
+    private function getMaxClientWalletBalance(): int
+    {
+        $default = 1000000000;
+        $setting = SystemSetting::where('key', 'max_client_wallet_balance')->first();
+
+        if (!$setting) {
+            return $default;
+        }
+
+        $raw = preg_replace('/[^\d]/', '', (string) $setting->value);
+        $value = (int) ($raw === '' ? $default : $raw);
+
+        return max(0, $value);
+    }
+
+    private function enforceClientWalletBalanceLimit(string $targetUserId, int $amount): ?\Illuminate\Http\JsonResponse
+    {
+        if ($amount <= 0) {
+            return null;
+        }
+
+        $targetUser = User::with('role')->find($targetUserId);
+        if (!$targetUser) {
+            return ApiResponseClass::sendError(
+                'Utilisateur destinataire introuvable.',
+                [],
+                Response::HTTP_NOT_FOUND
+            );
+        }
+
+        $roleSlug = (string) ($targetUser->role?->slug ?? '');
+        if ($roleSlug !== RoleEnum::CLIENT->value) {
+            return null;
+        }
+
+        $targetWallet = $this->walletRepository->getByUserId($targetUserId);
+        $currentBalance = (int) ($targetWallet->cash_available ?? 0);
+        $maxClientWalletBalance = $this->getMaxClientWalletBalance();
+        $projectedBalance = $currentBalance + $amount;
+
+        if ($projectedBalance > $maxClientWalletBalance) {
+            return ApiResponseClass::sendError(
+                "Opération refusée: le solde du client dépasserait la limite autorisée ({$maxClientWalletBalance} GNF).",
+                [
+                    'client_current_balance' => $currentBalance,
+                    'amount' => $amount,
+                    'client_projected_balance' => $projectedBalance,
+                    'max_client_wallet_balance' => $maxClientWalletBalance,
+                ],
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+
+        return null;
     }
 
     public function index()
@@ -290,6 +348,13 @@ class WalletController extends Controller
         }
 
         try {
+            $limitError = $this->enforceClientWalletBalanceLimit(
+                (string) $request->user_id,
+                (int) $request->amount,
+            );
+            if ($limitError) {
+                return $limitError;
+            }
 
             $fromUser = Auth::guard()->user();
 
