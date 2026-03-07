@@ -606,7 +606,13 @@ class CreanceController extends Controller
         }
 
         $creances = $query->where('user_id', $user->id)
-            ->when($request->statut, fn($q) => $q->where('statut', $request->statut))
+            ->when($request->statut, function ($q) use ($request) {
+                $statut = (string) $request->statut;
+                if ($statut === 'en_cours') {
+                    return $q->whereIn('statut', ['en_cours', 'partiellement_payee']);
+                }
+                return $q->where('statut', $statut);
+            })
             ->orderByDesc('created_at')
             ->paginate(20);
 
