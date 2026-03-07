@@ -42,11 +42,9 @@ class RiskScoringService
     private const SEUIL_FAIBLE  = 75;
     private const SEUIL_MOYEN   = 50;
 
-    // ─── Limites crédit par niveau risque ────────────────────────────────
-
-    private const LIMITE_BASE_FAIBLE = null; // conserve la limite définie par l'admin
-    private const LIMITE_REDUCTION_MOYEN  = 0.75; // ×0.75
-    private const LIMITE_REDUCTION_ELEVE  = 0.40; // ×0.40
+    // ─── Limites crédit ───────────────────────────────────────────────────
+    // La limite de crédit est pilotée par l'admin et ne doit pas être
+    // réduite automatiquement par le moteur de scoring.
 
     public function __construct(
         private readonly AuditLogService $auditService,
@@ -90,10 +88,9 @@ class RiskScoringService
             $variables = $this->collecterVariables($user, $profil);
             $nouveauScore = $this->calculerScore($variables);
             $nouveauNiveau = $this->determinerNiveauRisque($nouveauScore);
-            $nouvelleLimite = $this->calculerNouvelleLimit($profil, $nouveauNiveau);
-
             $scoreAvant = $profil->score_fiabilite;
-            $limiteAvant = (float) $profil->credit_limite;
+            // La limite est pilotée par l'admin: le scoring ne la modifie pas.
+            $nouvelleLimite = (float) $profil->credit_limite;
 
             // Mise à jour profil
             $profil->fill([
@@ -117,20 +114,17 @@ class RiskScoringService
             $profil->save();
 
             // Les widgets admin (ex: GET /risk/clients) sont mis en cache.
-            // Quand la limite évolue automatiquement via scoring, on invalide
-            // le cache global (best-effort) pour réduire les incohérences.
-            if ($limiteAvant !== (float) $profil->credit_limite) {
-                try {
-                    foreach ([50, 200] as $perPage) {
-                        Cache::forget(sprintf('risk.dashboard.clients.%d.%d', $perPage, 1));
-                    }
-                    foreach ([20, 50] as $perPage) {
-                        Cache::forget(sprintf('risk.dashboard.clients_risque.%d.%d', $perPage, 1));
-                    }
-                    Cache::forget('risk.dashboard.top_clients');
-                } catch (\Throwable) {
-                    // Best-effort
+            // Après recalcul du score/niveau, invalider systématiquement.
+            try {
+                foreach ([50, 200] as $perPage) {
+                    Cache::forget(sprintf('risk.dashboard.clients.%d.%d', $perPage, 1));
                 }
+                foreach ([20, 50] as $perPage) {
+                    Cache::forget(sprintf('risk.dashboard.clients_risque.%d.%d', $perPage, 1));
+                }
+                Cache::forget('risk.dashboard.top_clients');
+            } catch (\Throwable) {
+                // Best-effort
             }
 
             // Historique
@@ -261,23 +255,6 @@ class RiskScoringService
             $score >= self::SEUIL_FAIBLE => 'faible',
             $score >= self::SEUIL_MOYEN  => 'moyen',
             default                       => 'eleve',
-        };
-    }
-
-    // ─── Calcul limite crédit ────────────────────────────────────────────
-
-    private function calculerNouvelleLimit(CreditProfile $profil, string $niveau): float
-    {
-        $limiteActuelle = (float) $profil->credit_limite;
-        if ($limiteActuelle <= 0) {
-            return $limiteActuelle;
-        }
-
-        return match ($niveau) {
-            'faible' => $limiteActuelle,
-            'moyen'  => round($limiteActuelle * self::LIMITE_REDUCTION_MOYEN, 2),
-            'eleve'  => round($limiteActuelle * self::LIMITE_REDUCTION_ELEVE, 2),
-            default  => $limiteActuelle,
         };
     }
 

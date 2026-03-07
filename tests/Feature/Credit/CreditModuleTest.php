@@ -460,6 +460,39 @@ class CreditModuleTest extends TestCase
         ]);
     }
 
+    public function test_recalcul_score_ne_modifie_pas_limite_admin(): void
+    {
+        $this->clientPro->creditProfile->update([
+            'credit_limite' => 30000000,
+            'credit_disponible' => 30000000,
+            'score_fiabilite' => 80,
+            'niveau_risque' => 'faible',
+            'total_encours' => 0,
+        ]);
+
+        $creance = $this->creanceService->creerCreance(
+            $this->clientPro,
+            5000000,
+            'Créance pour forcer le risque',
+            now()->subDays(5)->toDateString(),
+            $this->admin
+        );
+
+        $creance->update([
+            'statut' => 'en_retard',
+            'jours_retard' => 15,
+        ]);
+
+        $updated = $this->scoringService->recalculerScore($this->clientPro, 'recalcul_manuel');
+
+        $this->assertEquals(30000000.0, (float) $updated->credit_limite);
+        $this->assertEquals('eleve', $updated->niveau_risque);
+        $this->assertEquals(
+            max(0, (float) $updated->credit_limite - (float) $updated->total_encours),
+            (float) $updated->credit_disponible
+        );
+    }
+
     // ─── Test 6 : API Endpoints ───────────────────────────────────────────
 
     public function test_endpoint_dashboard_risk_requiert_admin(): void
@@ -604,6 +637,67 @@ class CreditModuleTest extends TestCase
         $this->assertArrayHasKey('total_encours', $found);
         $this->assertGreaterThan(0, (float) $found['credit_limite']);
         $this->assertGreaterThan(0, (float) $found['total_encours']);
+    }
+
+    public function test_endpoint_recalculer_score_ne_modifie_pas_limite_admin(): void
+    {
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+
+        $admin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'is_pro' => false,
+        ]);
+
+        $client = User::factory()->create(['is_pro' => true]);
+        CreditProfile::updateOrCreate(
+            ['user_id' => $client->id],
+            [
+                'credit_limite' => 30_000_000,
+                'credit_disponible' => 30_000_000,
+                'score_fiabilite' => 80,
+                'niveau_risque' => 'faible',
+                'est_bloque' => false,
+                'total_encours' => 0,
+            ]
+        );
+
+        $creance = $this->creanceService->creerCreance(
+            $client,
+            5_000_000,
+            'Créance pour recalcul score endpoint',
+            now()->subDays(5)->toDateString(),
+            $admin
+        );
+
+        $creance->update([
+            'statut' => 'en_retard',
+            'jours_retard' => 15,
+        ]);
+
+        $this->actingAs($admin);
+        $response = $this->postJson('/api/v1/risk/clients/' . $client->id . '/recalculer-score');
+
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('success', true);
+
+        $client->refresh();
+        $profil = $client->creditProfile;
+
+        $this->assertNotNull($profil);
+        $this->assertEquals(30_000_000.0, (float) $profil->credit_limite);
+        $this->assertEquals('eleve', $profil->niveau_risque);
+        $this->assertEquals(
+            max(0, (float) $profil->credit_limite - (float) $profil->total_encours),
+            (float) $profil->credit_disponible
+        );
     }
 
     public function test_endpoint_mes_creances_retourne_profil(): void

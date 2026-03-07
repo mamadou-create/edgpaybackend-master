@@ -262,6 +262,44 @@ class CreanceController extends Controller
     }
 
     /**
+     * DELETE /creances/{id} — Résilier (annuler) puis supprimer une créance
+     */
+    public function destroy(string $id): JsonResponse
+    {
+        /** @var User|null $admin */
+        $admin = Auth::user();
+
+        $creance = Creance::with('client')->findOrFail($id);
+
+        if ($admin instanceof User && !$this->isSuperAdminUser($admin)) {
+            $client = $creance->client;
+            if (!($client instanceof User) || !$this->clientIsAssignedToActor($client, $admin)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Non autorisé: cette créance ne vous est pas assignée.',
+                ], 403);
+            }
+        }
+
+        if ($creance->statut !== 'annulee') {
+            $creance->statut = 'annulee';
+            $creance->save();
+        }
+
+        $creance->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Créance résiliée et supprimée avec succès.',
+            'data' => [
+                'id' => $id,
+                'statut' => 'annulee',
+                'deleted' => true,
+            ],
+        ]);
+    }
+
+    /**
      * POST /creances/transactions/{id}/valider — Valider un paiement
      */
     public function validerPaiement(string $transactionId): JsonResponse

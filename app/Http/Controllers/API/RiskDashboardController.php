@@ -472,9 +472,8 @@ class RiskDashboardController extends Controller
         $profil = $this->scoring->recalculerScore($client, 'recalcul_manuel_admin');
 
         // Le listing admin (GET /risk/clients) et autres widgets du dashboard
-        // sont mis en cache ~25s. Après un recalcul de score (qui peut ajuster
-        // la limite), on invalide le cache pour éviter une incohérence entre
-        // admin et côté client.
+        // sont mis en cache ~25s. Après un recalcul de score, on invalide le
+        // cache pour éviter une incohérence entre admin et côté client.
         try {
             foreach ([50, 200] as $perPage) {
                 Cache::forget(sprintf('risk.dashboard.clients.%d.%d', $perPage, 1));
