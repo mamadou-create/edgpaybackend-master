@@ -9,6 +9,74 @@ use Illuminate\Support\Facades\Cache;
 
 class SystemSettingRepository implements SystemSettingRepositoryInterface
 {
+    private function getDefaultSettingDefinition(string $key): ?array
+    {
+        $definitions = [
+            'client_payments_enabled' => [
+                'type' => 'boolean',
+                'group' => 'payments',
+                'description' => 'Active/désactive les paiements pour les clients',
+                'order' => 1,
+            ],
+            'pro_payments_enabled' => [
+                'type' => 'boolean',
+                'group' => 'payments',
+                'description' => 'Active/désactive les paiements pour les utilisateurs PRO',
+                'order' => 2,
+            ],
+            'sub_admin_payments_enabled' => [
+                'type' => 'boolean',
+                'group' => 'payments',
+                'description' => 'Active/désactive les paiements pour les sous-administrateurs',
+                'order' => 3,
+            ],
+            'maintenance_mode' => [
+                'type' => 'boolean',
+                'group' => 'system',
+                'description' => 'Mode maintenance',
+                'order' => 10,
+            ],
+            'max_transaction_amount' => [
+                'type' => 'integer',
+                'group' => 'limits',
+                'description' => 'Montant maximum par transaction (en unité monétaire)',
+                'order' => 20,
+            ],
+            'max_client_wallet_balance' => [
+                'type' => 'integer',
+                'group' => 'limits',
+                'description' => 'Solde maximum autorisé pour un wallet client',
+                'order' => 21,
+            ],
+            'pro_gain_percent_on_client_cashout' => [
+                'type' => 'float',
+                'group' => 'payments',
+                'description' => 'Pourcentage de gain du PRO sur chaque retrait cash client',
+                'order' => 30,
+            ],
+            'pro_gain_percent_on_client_deposit' => [
+                'type' => 'float',
+                'group' => 'payments',
+                'description' => 'Pourcentage de gain du PRO sur chaque dépôt/recharge client',
+                'order' => 31,
+            ],
+            'client_cashout_fee_percent' => [
+                'type' => 'float',
+                'group' => 'payments',
+                'description' => 'Pourcentage de frais prélevé sur le client lors d\'un retrait cash',
+                'order' => 32,
+            ],
+            'client_to_client_transfer_fee_percent_above_1000000' => [
+                'type' => 'float',
+                'group' => 'payments',
+                'description' => 'Pourcentage de frais appliqué aux transferts client->client strictement supérieurs à 1 000 000 GNF',
+                'order' => 33,
+            ],
+        ];
+
+        return $definitions[$key] ?? null;
+    }
+
     public function getAll()
     {
         // return Cache::remember('system_settings_all', 3600, function () {
@@ -59,14 +127,30 @@ class SystemSettingRepository implements SystemSettingRepositoryInterface
     public function updateByKey($key, $value)
     {
         $setting = SystemSetting::where('key', $key)->first();
-        
-        if ($setting) {
-            $setting->update(['value' => $value]);
-            // $this->clearCache();
+
+        if (!$setting) {
+            $definition = $this->getDefaultSettingDefinition((string) $key);
+            if (!$definition) {
+                return null;
+            }
+
+            $setting = SystemSetting::create([
+                'key' => (string) $key,
+                'value' => (string) $value,
+                'type' => $definition['type'],
+                'group' => $definition['group'],
+                'description' => $definition['description'],
+                'is_active' => true,
+                'is_editable' => true,
+                'order' => $definition['order'],
+            ]);
+
             return $setting;
         }
-        
-        return null;
+
+        $setting->update(['value' => $value]);
+        // $this->clearCache();
+        return $setting;
     }
 
     public function updateMultiple(array $settings)
