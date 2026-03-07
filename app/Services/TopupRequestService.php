@@ -160,12 +160,11 @@ class TopupRequestService
                             'topup_request_id' => $commande->id,
                             'kind' => $commande->kind,
                             'statut_paiement' => $statutPaiement,
-                            'bypass_credit_limit' => true,
+                            'bypass_credit_limit' => false,
                         ];
 
-                        // Admin approval of an unpaid topup explicitly authorizes bypassing credit limits.
-                        // This is restricted by the controller to super-admin/sub-admin.
-                        $bypassCreditLimit = $approver->isSuperAdmin() || $approver->isSubAdmin();
+                        // Recharge impayée: appliquer strictement la limite de crédit allouée.
+                        $bypassCreditLimit = false;
 
                         $created = $this->creanceService->creerCreance(
                             $client,
