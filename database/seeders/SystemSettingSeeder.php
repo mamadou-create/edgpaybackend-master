@@ -83,6 +83,14 @@ class SystemSettingSeeder extends Seeder
                 'description' => 'Pourcentage de frais prélevé sur le client lors d\'un retrait cash',
                 'order' => 32,
             ],
+            [
+                'key' => 'client_to_client_transfer_fee_percent_above_1000000',
+                'value' => '1',
+                'type' => 'float',
+                'group' => 'payments',
+                'description' => 'Pourcentage de frais appliqué aux transferts client->client strictement supérieurs à 1 000 000 GNF',
+                'order' => 33,
+            ],
         ];
 
         foreach ($settings as $setting) {

@@ -501,6 +501,7 @@ class ClientWalletController extends Controller
             $sender = Auth::user();
             $amount = (int) $request->input('amount');
             $recipientPhone = trim((string) $request->input('recipient_phone'));
+            $transferFeeThreshold = 1000000;
 
             $recipient = User::where('phone', $recipientPhone)
                 ->whereHas('role', fn ($q) => $q->where('slug', RoleEnum::CLIENT->value))
@@ -537,6 +538,20 @@ class ClientWalletController extends Controller
                 order: 21,
                 default: 1000000000
             );
+
+            $transferFeePercentAboveThreshold = $this->getOrCreatePercentSetting(
+                key: 'client_to_client_transfer_fee_percent_above_1000000',
+                description: 'Pourcentage de frais appliqué aux transferts client->client strictement supérieurs à 1 000 000 GNF',
+                order: 33,
+                default: 1.0
+            );
+
+            $transferFee = 0;
+            if ($amount > $transferFeeThreshold && $transferFeePercentAboveThreshold > 0) {
+                $transferFee = (int) round(($amount * $transferFeePercentAboveThreshold) / 100);
+            }
+
+            $totalDebit = $amount + $transferFee;
             $projectedRecipientBalance = (int) $recipientWallet->cash_available + $amount;
             if ($projectedRecipientBalance > $maxClientWalletBalance) {
                 return ApiResponseClass::sendError(
@@ -552,15 +567,20 @@ class ClientWalletController extends Controller
             }
 
             $available = (int) ($senderWallet->cash_available - $senderWallet->blocked_amount);
-            if ($available < $amount) {
+            if ($available < $totalDebit) {
                 return ApiResponseClass::sendError(
-                    "Solde insuffisant. Disponible: {$available} GNF, requis: {$amount} GNF",
-                    ['available' => $available, 'required' => $amount],
+                    "Solde insuffisant. Disponible: {$available} GNF, requis: {$totalDebit} GNF",
+                    [
+                        'available' => $available,
+                        'required' => $totalDebit,
+                        'amount' => $amount,
+                        'transfer_fee' => $transferFee,
+                    ],
                     Response::HTTP_UNPROCESSABLE_ENTITY
                 );
             }
 
-            $ok = $this->walletService->transfer(
+            $transferOk = $this->walletService->transfer(
                 fromWalletId: $senderWallet->id,
                 fromUserId: $sender->id,
                 toWalletId: $recipientWallet->id,
@@ -569,14 +589,77 @@ class ClientWalletController extends Controller
                 description: "Transfert wallet vers {$recipient->display_name} ({$recipient->phone})",
             );
 
-            if (!$ok) {
+            if (!$transferOk) {
                 return ApiResponseClass::serverError('Échec du transfert wallet.');
+            }
+
+            if ($transferFee > 0) {
+                $superAdmin = $this->getSuperAdmin();
+
+                try {
+                    $superAdminWallet = $this->walletService->getWalletByUserId($superAdmin->id);
+                } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+                    $created = $this->walletService->createWalletForUser($superAdmin->id);
+                    $superAdminWallet = $created['wallet'];
+                }
+
+                try {
+                    $feeOk = $this->walletService->transfer(
+                        fromWalletId: $senderWallet->id,
+                        fromUserId: $sender->id,
+                        toWalletId: $superAdminWallet->id,
+                        toUserId: $superAdmin->id,
+                        amount: $transferFee,
+                        description: "Frais transfert client > 1 000 000 GNF ({$transferFeePercentAboveThreshold}%)",
+                    );
+
+                    if (!$feeOk) {
+                        throw new \RuntimeException('Échec du reversement des frais au système.');
+                    }
+                } catch (\Throwable $feeError) {
+                    Log::error('[ClientWalletController] transferToClient fee transfer failed, rollback transfer', [
+                        'error' => $feeError->getMessage(),
+                        'sender_id' => $sender->id,
+                        'recipient_id' => $recipient->id,
+                        'amount' => $amount,
+                        'transfer_fee' => $transferFee,
+                    ]);
+
+                    try {
+                        $rollbackOk = $this->walletService->transfer(
+                            fromWalletId: $recipientWallet->id,
+                            fromUserId: $recipient->id,
+                            toWalletId: $senderWallet->id,
+                            toUserId: $sender->id,
+                            amount: $amount,
+                            description: "Annulation transfert suite à échec des frais système",
+                        );
+
+                        if (!$rollbackOk) {
+                            throw new \RuntimeException('Annulation du transfert impossible.');
+                        }
+                    } catch (\Throwable $rollbackError) {
+                        Log::critical('[ClientWalletController] transferToClient rollback failed after fee failure', [
+                            'error' => $rollbackError->getMessage(),
+                            'sender_id' => $sender->id,
+                            'recipient_id' => $recipient->id,
+                            'amount' => $amount,
+                            'transfer_fee' => $transferFee,
+                        ]);
+                    }
+
+                    return ApiResponseClass::serverError('Échec du traitement des frais système. Le transfert a été annulé.');
+                }
             }
 
             $senderWallet->refresh();
 
             return ApiResponseClass::sendResponse([
                 'amount'            => $amount,
+                'transfer_fee'      => $transferFee,
+                'fee_percent'       => $transferFeePercentAboveThreshold,
+                'fee_threshold'     => $transferFeeThreshold,
+                'total_debited'     => $totalDebit,
                 'recipient'         => [
                     'id'           => $recipient->id,
                     'display_name' => $recipient->display_name,
