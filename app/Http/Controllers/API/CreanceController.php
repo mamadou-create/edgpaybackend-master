@@ -1090,20 +1090,23 @@ class CreanceController extends Controller
 
     /**
      * Résout les destinataires pour la notification "remboursement soumis".
-     * Priorité : CREDIT_REIMBURSEMENT_NOTIFY_EMAILS (.env) > sous-admin assigné > admins credits.manage (incl. super-admins).
+     * Règle stricte : si le PRO est assigné à un sous-admin, notifier uniquement ce sous-admin.
+     * Sinon : CREDIT_REIMBURSEMENT_NOTIFY_EMAILS (.env) > admins credits.manage (incl. super-admins).
      */
     private function resolveReimbursementRecipients(User $client): array
     {
-        $configured = config('edgpay.credit.reimbursement_notify_emails', []);
-        if (is_array($configured) && !empty($configured)) {
-            return array_values(array_unique(array_filter($configured)));
-        }
-
         if (!empty($client->assigned_user)) {
             $assigned = User::find($client->assigned_user);
             if ($assigned instanceof User && !empty($assigned->email)) {
                 return [$assigned->email];
             }
+
+            return [];
+        }
+
+        $configured = config('edgpay.credit.reimbursement_notify_emails', []);
+        if (is_array($configured) && !empty($configured)) {
+            return array_values(array_unique(array_filter($configured)));
         }
 
         // Fallback : tous les admins capables de gérer le module crédit.

@@ -132,6 +132,70 @@ class TopupRequestEmailTest extends TestCase
     }
 
     #[Test]
+    public function un_pro_assigne_notifie_uniquement_le_sous_admin_assigne_et_pas_le_super_admin(): void
+    {
+        Mail::fake();
+
+        $perm = Permission::query()->updateOrCreate(
+            ['slug' => 'transactions.validate_pending'],
+            [
+                'name' => 'Valider transactions en attente',
+                'module' => 'Transactions',
+                'description' => 'Permission tests',
+            ]
+        );
+
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+        $superAdmin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'email' => 'superadmin@example.test',
+            'is_pro' => false,
+        ]);
+
+        $financeRole = Role::query()->updateOrCreate(
+            ['slug' => 'finance_admin'],
+            [
+                'name' => 'Sous-Admin Finance',
+                'description' => 'Rôle finance (tests)',
+                'is_super_admin' => false,
+            ]
+        );
+        $financeRole->permissions()->syncWithoutDetaching([$perm->id => ['access_level' => 'oui']]);
+
+        $financeAdmin = User::factory()->create([
+            'role_id' => $financeRole->id,
+            'email' => 'finance@example.test',
+            'is_pro' => false,
+        ]);
+
+        $pro = User::factory()->create([
+            'is_pro' => true,
+            'assigned_user' => $financeAdmin->id,
+        ]);
+
+        $this->actingAs($pro);
+        $res = $this->postJson('/api/v1/topup-requests', [
+            'pro_id' => $pro->id,
+            'amount' => 1000,
+            'note' => 'test recharge assignee',
+        ]);
+
+        $res->assertStatus(201);
+
+        Mail::assertSent(TopupRequestSubmittedMail::class, function ($mailable) use ($financeAdmin, $superAdmin) {
+            return $mailable->hasTo($financeAdmin->email)
+                && ! $mailable->hasTo($superAdmin->email);
+        });
+    }
+
+    #[Test]
     public function approbation_impayee_refusee_si_montant_depasse_limite_credit_pro(): void
     {
         $superRole = Role::query()->updateOrCreate(

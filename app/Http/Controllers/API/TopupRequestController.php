@@ -733,16 +733,20 @@ class TopupRequestController extends Controller
     /**
      * Résout les destinataires admin pour les demandes de recharge.
      * Utilise l'email enregistré dans la table users (email de création de compte).
-     * Priorité : sous-admin assigné au PRO > admins (hors sous-admin) capables de traiter les recharges.
+     * Règle stricte : si le PRO est assigné à un sous-admin, notifier uniquement ce sous-admin.
+     * Sinon: fallback admins (hors sous-admin) capables de traiter les recharges.
      */
     private function resolveTopupAdminRecipients(User $requester): array
     {
-        // Si le PRO est assigné à un sous-admin, notifier ce sous-admin.
+        // Si le PRO est assigné à un sous-admin, notifier UNIQUEMENT ce sous-admin.
+        // Aucun fallback super-admin dans ce cas.
         if (!empty($requester->assigned_user)) {
             $assigned = User::find($requester->assigned_user);
             if ($assigned instanceof User && !empty($assigned->email)) {
                 return [$assigned->email];
             }
+
+            return [];
         }
 
         // Sinon, notifier les admins capables de traiter les recharges.
