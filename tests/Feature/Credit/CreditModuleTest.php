@@ -553,12 +553,17 @@ class CreditModuleTest extends TestCase
 
     // ─── Test 6 : API Endpoints ───────────────────────────────────────────
 
-    public function test_endpoint_dashboard_risk_requiert_admin(): void
+    public function test_endpoint_dashboard_risk_pour_pro_retourne_vue_scopee(): void
     {
         $this->actingAs($this->clientPro);
         $response = $this->getJson('/api/v1/risk/dashboard');
-        // Doit être 403 car client non admin
-        $this->assertContains($response->status(), [401, 403]);
+
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.creances_en_retard_nb', 0)
+            ->assertJsonPath('data.clients_risque_eleve', 0)
+            ->assertJsonPath('data.clients_bloques', 0);
     }
 
     public function test_admin_peut_resoudre_anomalies_critiques_client_en_masse(): void
