@@ -68,10 +68,24 @@ class CheckPermission
      */
     private function hasPermission($user, string $permission): bool
     {
-        if (!method_exists($user, 'hasPermission')) {
-            return false;
+        if (
+            $permission === 'credits.manage'
+            && method_exists($user, 'isSubAdmin')
+            && (bool) $user->isSubAdmin()
+        ) {
+            return true;
         }
 
-        return $user->hasPermission($permission);
+        $hasFullPermission = method_exists($user, 'hasPermission')
+            ? (bool) $user->hasPermission($permission)
+            : false;
+
+        if ($hasFullPermission) {
+            return true;
+        }
+
+        return method_exists($user, 'hasLimitedPermission')
+            ? (bool) $user->hasLimitedPermission($permission)
+            : false;
     }
 }

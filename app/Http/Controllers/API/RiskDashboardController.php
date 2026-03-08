@@ -251,14 +251,55 @@ class RiskDashboardController extends Controller
             ? sprintf('risk.dashboard.clients.actor.%s.%d.%d', $actor->id, $perPage, $page)
             : sprintf('risk.dashboard.clients.%d.%d', $perPage, $page);
 
-        $clients = Cache::remember($cacheKey, now()->addSeconds(25), function () use ($perPage, $actor) {
-            $q = CreditProfile::with('user:id,display_name,phone,email');
-
+        $clients = Cache::remember($cacheKey, now()->addSeconds(25), function () use ($perPage, $page, $actor) {
             if ($actor instanceof User && !$this->isSuperAdminUser($actor)) {
-                $q->whereIn('user_id', $this->assignedUserIdsQuery($actor));
+                $p = User::query()
+                    ->leftJoin('credit_profiles as cp', 'cp.user_id', '=', 'users.id')
+                    ->leftJoin('roles as r', 'r.id', '=', 'users.role_id')
+                    ->where('users.assigned_user', $actor->id)
+                    ->where(function ($query) {
+                        $query->where('users.is_pro', true)
+                            ->orWhere('r.slug', 'pro');
+                    })
+                    ->whereNull('users.deleted_at')
+                    ->select([
+                        'users.id as user_id',
+                        'users.display_name',
+                        'users.phone',
+                        'users.email',
+                        DB::raw('COALESCE(cp.score_fiabilite, 0) as score_fiabilite'),
+                        DB::raw("COALESCE(cp.niveau_risque, 'moyen') as niveau_risque"),
+                        DB::raw('COALESCE(cp.credit_limite, 0) as credit_limite'),
+                        DB::raw('COALESCE(cp.credit_disponible, 0) as credit_disponible'),
+                        DB::raw('COALESCE(cp.total_encours, 0) as total_encours'),
+                        DB::raw('CASE WHEN COALESCE(cp.credit_limite, 0) > 0 THEN ROUND((COALESCE(cp.total_encours, 0) * 100.0) / cp.credit_limite, 2) ELSE 0 END as ratio_endettement'),
+                    ])
+                    ->orderByDesc(DB::raw('COALESCE(cp.total_encours, 0)'))
+                    ->orderBy('users.display_name')
+                    ->paginate($perPage, ['*'], 'page', $page);
+
+                $p->setCollection(
+                    $p->getCollection()->map(fn($row) => [
+                        'user'              => [
+                            'id' => $row->user_id,
+                            'display_name' => $row->display_name,
+                            'phone' => $row->phone,
+                            'email' => $row->email,
+                        ],
+                        'score'             => (int) ($row->score_fiabilite ?? 0),
+                        'niveau_risque'     => (string) ($row->niveau_risque ?? 'moyen'),
+                        'credit_limite'     => (float) ($row->credit_limite ?? 0),
+                        'credit_disponible' => (float) ($row->credit_disponible ?? 0),
+                        'total_encours'     => (float) ($row->total_encours ?? 0),
+                        'taux_utilisation'  => (float) ($row->ratio_endettement ?? 0),
+                    ])
+                );
+
+                return $p;
             }
 
-            $p = $q->orderByDesc('total_encours')->paginate($perPage);
+            $q = CreditProfile::with('user:id,display_name,phone,email');
+            $p = $q->orderByDesc('total_encours')->paginate($perPage, ['*'], 'page', $page);
 
             $p->setCollection(
                 $p->getCollection()->map(fn($profile) => [

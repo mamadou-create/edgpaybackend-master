@@ -711,6 +711,16 @@ class WalletRepository implements WalletRepositoryInterface
     public function getUserStats($userId)
     {
         try {
+            $nbClientsAssignes = User::where('assigned_user', $userId)
+                ->whereNull('deleted_at')
+                ->where(function ($query) {
+                    $query->where('is_pro', true)
+                        ->orWhereHas('role', function ($q) {
+                            $q->where('slug', RoleEnum::PRO);
+                        });
+                })
+                ->count();
+
             $wallet = Wallet::where('user_id', $userId)->first();
 
             if (!$wallet) {
@@ -719,7 +729,7 @@ class WalletRepository implements WalletRepositoryInterface
                     'nbPaiements' => 0,
                     'totalPaye' => 0,
                     'lastTx' => null,
-                    'nbClientsAssignes' => 0,
+                    'nbClientsAssignes' => $nbClientsAssignes,
                     'nbTransactions' => 0,
                     'commission' => 0,
                 ];
@@ -741,11 +751,6 @@ class WalletRepository implements WalletRepositoryInterface
             $lastTxInfo = $lastTx
                 ? $lastTx->amount . ' GNF le ' . $lastTx->created_at->format('d/m/Y')
                 : null;
-
-
-
-            // 🔹 Nombre de clients assignés à cet utilisateur
-            $nbClientsAssignes = User::where('assigned_user', $userId)->count();
 
             // 🔹 Total des commissions (si le champ 'type' ou 'category' == 'commission')
             // $commission = $transactions

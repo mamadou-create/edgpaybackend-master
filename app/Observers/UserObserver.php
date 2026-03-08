@@ -2,6 +2,7 @@
 
 namespace App\Observers;
 
+use App\Enums\RoleEnum;
 use App\Models\CreditProfile;
 use App\Models\User;
 use Illuminate\Support\Str;
@@ -9,10 +10,17 @@ use Illuminate\Support\Str;
 class UserObserver
 {
     /**
-     * Crée automatiquement un profil de crédit à la création de chaque utilisateur.
+     * Crée automatiquement un profil de crédit à la création d'un PRO.
      */
     public function created(User $user): void
     {
+        $isProAtCreation = (bool) ($user->is_pro ?? false)
+            || (string) optional($user->role)->slug === RoleEnum::PRO;
+
+        if (!$isProAtCreation) {
+            return;
+        }
+
         // Éviter les doublons (ex: seeders qui appellent firstOrCreate)
         if ($user->creditProfile()->exists()) {
             return;

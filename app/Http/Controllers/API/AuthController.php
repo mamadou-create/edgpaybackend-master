@@ -119,11 +119,20 @@ class AuthController extends Controller
                 'password' => 'required|string',
             ]);
 
-            $loginInput = $request->input('login');
+            $loginInput = trim((string) $request->input('login'));
             $password = $request->input('password');
 
             $user = $this->userRepository->findByEmail($loginInput)
                 ?? $this->userRepository->findByPhone($loginInput);
+
+            if (!$user) {
+                foreach ($this->buildPhoneCandidates($loginInput) as $candidate) {
+                    $user = $this->userRepository->findByPhone($candidate);
+                    if ($user) {
+                        break;
+                    }
+                }
+            }
 
             if (!$user || !Hash::check($password, $user->password)) {
                 return ApiResponseClass::unauthorized('Les identifiants de connexion ne sont pas valides');
@@ -168,6 +177,61 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             return ApiResponseClass::serverError('Erreur lors de la connexion');
         }
+    }
+
+    /**
+     * Génère des variantes de numéro guinéen pour tolérer différents formats de saisie.
+     * Exemples: 620000000, +224620000000, 00224620000000.
+     *
+     * @return array<int, string>
+     */
+    private function buildPhoneCandidates(string $loginInput): array
+    {
+        $raw = trim($loginInput);
+        if ($raw === '') {
+            return [];
+        }
+
+        $normalized = str_replace([' ', '-', '.', '(', ')'], '', $raw);
+        $digitsOnly = preg_replace('/[^0-9]/', '', $normalized) ?? '';
+
+        $candidates = [$raw, $normalized, $digitsOnly];
+
+        if (str_starts_with($normalized, '+')) {
+            $withoutPlus = ltrim($normalized, '+');
+            $candidates[] = $withoutPlus;
+            $candidates[] = preg_replace('/[^0-9]/', '', $withoutPlus) ?? '';
+        }
+
+        if (str_starts_with($digitsOnly, '00224')) {
+            $local = substr($digitsOnly, 5);
+            $candidates[] = $local;
+            $candidates[] = '+224' . $local;
+            $candidates[] = '224' . $local;
+        } elseif (str_starts_with($digitsOnly, '224')) {
+            $local = substr($digitsOnly, 3);
+            $candidates[] = $local;
+            $candidates[] = '+224' . $local;
+            $candidates[] = '00224' . $local;
+        } elseif (strlen($digitsOnly) === 9 && str_starts_with($digitsOnly, '6')) {
+            $candidates[] = '+224' . $digitsOnly;
+            $candidates[] = '224' . $digitsOnly;
+            $candidates[] = '00224' . $digitsOnly;
+        }
+
+        $unique = [];
+        foreach ($candidates as $value) {
+            $candidate = trim((string) $value);
+            if ($candidate === '') {
+                continue;
+            }
+            if (in_array($candidate, $unique, true)) {
+                continue;
+            }
+            $unique[] = $candidate;
+        }
+
+        return $unique;
     }
 
     /**

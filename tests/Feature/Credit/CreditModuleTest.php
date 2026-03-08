@@ -246,6 +246,64 @@ class CreditModuleTest extends TestCase
         );
     }
 
+    public function test_creation_utilisateur_pro_cree_automatiquement_un_profil_credit(): void
+    {
+        $pro = User::factory()->create(['is_pro' => true]);
+
+        $this->assertDatabaseHas('credit_profiles', [
+            'user_id' => $pro->id,
+        ]);
+    }
+
+    public function test_creation_utilisateur_non_pro_ne_cree_pas_de_profil_credit(): void
+    {
+        $user = User::factory()->create(['is_pro' => false]);
+
+        $this->assertDatabaseMissing('credit_profiles', [
+            'user_id' => $user->id,
+        ]);
+    }
+
+    public function test_stats_sous_admin_retourne_nombre_pro_assignes_meme_sans_wallet(): void
+    {
+        $financeRole = Role::query()->updateOrCreate(
+            ['slug' => 'finance_admin'],
+            [
+                'name' => 'Sous-Admin Finance',
+                'description' => 'Rôle finance (tests)',
+                'is_super_admin' => false,
+            ]
+        );
+
+        $proRole = Role::query()->updateOrCreate(
+            ['slug' => 'pro'],
+            [
+                'name' => 'PRO',
+                'description' => 'Rôle pro (tests)',
+                'is_super_admin' => false,
+            ]
+        );
+
+        $subAdmin = User::factory()->create([
+            'role_id' => $financeRole->id,
+            'is_pro' => false,
+        ]);
+
+        $assignedPro = User::factory()->create([
+            'role_id' => $proRole->id,
+            'is_pro' => false,
+            'assigned_user' => $subAdmin->id,
+        ]);
+
+        $this->actingAs($subAdmin);
+        $response = $this->getJson('/api/v1/wallets/' . $subAdmin->id . '/stats');
+
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.nbClientsAssignes', 1);
+    }
+
     // ─── Test 1 : Scoring de base ─────────────────────────────────────────
 
     public function test_calcul_niveau_risque(): void
@@ -637,6 +695,125 @@ class CreditModuleTest extends TestCase
         $this->assertArrayHasKey('total_encours', $found);
         $this->assertGreaterThan(0, (float) $found['credit_limite']);
         $this->assertGreaterThan(0, (float) $found['total_encours']);
+    }
+
+    public function test_sous_admin_risk_clients_liste_tous_les_pro_assignes_meme_sans_profil_credit(): void
+    {
+        $perm = Permission::query()->updateOrCreate(
+            ['slug' => 'credits.manage'],
+            [
+                'name' => 'Gérer crédit',
+                'module' => 'Crédit',
+                'description' => 'Permission crédit (tests)',
+            ]
+        );
+
+        $financeRole = Role::query()->updateOrCreate(
+            ['slug' => 'finance_admin'],
+            [
+                'name' => 'Sous-Admin Finance',
+                'description' => 'Rôle finance (tests)',
+                'is_super_admin' => false,
+            ]
+        );
+        $financeRole->permissions()->syncWithoutDetaching([$perm->id => ['access_level' => 'oui']]);
+
+        $financeAdmin = User::factory()->create([
+            'role_id' => $financeRole->id,
+            'is_pro' => false,
+        ]);
+
+        $assignedWithProfile = User::factory()->create([
+            'is_pro' => true,
+            'assigned_user' => $financeAdmin->id,
+        ]);
+        $assignedWithoutProfile = User::factory()->create([
+            'is_pro' => true,
+            'assigned_user' => $financeAdmin->id,
+        ]);
+        $nonAssignedPro = User::factory()->create([
+            'is_pro' => true,
+            'assigned_user' => null,
+        ]);
+
+        CreditProfile::updateOrCreate(
+            ['user_id' => $assignedWithProfile->id],
+            [
+                'credit_limite' => 900000,
+                'credit_disponible' => 850000,
+                'score_fiabilite' => 72,
+                'niveau_risque' => 'moyen',
+                'est_bloque' => false,
+                'total_encours' => 50000,
+            ]
+        );
+
+        CreditProfile::where('user_id', $assignedWithoutProfile->id)->delete();
+        CreditProfile::where('user_id', $nonAssignedPro->id)->delete();
+
+        $res = $this->actingAs($financeAdmin)->getJson('/api/v1/risk/clients?per_page=50');
+        $res->assertOk()->assertJsonPath('success', true);
+
+        $items = collect($res->json('data.data'));
+        $ids = $items->map(fn($it) => (string) data_get($it, 'user.id'))->values();
+
+        $this->assertTrue($ids->contains((string) $assignedWithProfile->id));
+        $this->assertTrue($ids->contains((string) $assignedWithoutProfile->id));
+        $this->assertFalse($ids->contains((string) $nonAssignedPro->id));
+
+        $withoutProfileRow = $items->first(
+            fn($it) => (string) data_get($it, 'user.id') === (string) $assignedWithoutProfile->id
+        );
+
+        $this->assertNotNull($withoutProfileRow);
+        $this->assertEquals(0.0, (float) data_get($withoutProfileRow, 'credit_limite'));
+        $this->assertEquals(0.0, (float) data_get($withoutProfileRow, 'total_encours'));
+    }
+
+    public function test_sous_admin_peut_acceder_risk_clients_sans_permission_explicite_credits_manage(): void
+    {
+        $financeRole = Role::query()->updateOrCreate(
+            ['slug' => 'finance_admin'],
+            [
+                'name' => 'Sous-Admin Finance',
+                'description' => 'Rôle finance (tests)',
+                'is_super_admin' => false,
+            ]
+        );
+
+        $financeRole->permissions()->detach();
+
+        $financeAdmin = User::factory()->create([
+            'role_id' => $financeRole->id,
+            'is_pro' => false,
+        ]);
+
+        $assignedPro = User::factory()->create([
+            'is_pro' => true,
+            'assigned_user' => $financeAdmin->id,
+        ]);
+
+        CreditProfile::updateOrCreate(
+            ['user_id' => $assignedPro->id],
+            [
+                'credit_limite' => 250000,
+                'credit_disponible' => 200000,
+                'score_fiabilite' => 62,
+                'niveau_risque' => 'moyen',
+                'est_bloque' => false,
+                'total_encours' => 50000,
+            ]
+        );
+
+        $res = $this->actingAs($financeAdmin)->getJson('/api/v1/risk/clients?per_page=50');
+
+        $res->assertOk()->assertJsonPath('success', true);
+
+        $ids = collect($res->json('data.data'))
+            ->map(fn($it) => (string) data_get($it, 'user.id'))
+            ->values();
+
+        $this->assertTrue($ids->contains((string) $assignedPro->id));
     }
 
     public function test_endpoint_recalculer_score_ne_modifie_pas_limite_admin(): void
@@ -1196,6 +1373,204 @@ class CreditModuleTest extends TestCase
         Mail::assertSent(CreanceReimbursementSubmittedMail::class, function ($mailable) use ($superAdmin, $financeAdmin) {
             return $mailable->hasTo($superAdmin->email) && ! $mailable->hasTo($financeAdmin->email);
         });
+    }
+
+    public function test_sous_admin_ne_voit_que_transactions_en_attente_de_ses_pro_assignes(): void
+    {
+        $perm = Permission::query()->updateOrCreate(
+            ['slug' => 'credits.manage'],
+            [
+                'name' => 'Gérer crédit',
+                'module' => 'Crédit',
+                'description' => 'Permission crédit (tests)',
+            ]
+        );
+
+        $financeRole = Role::query()->updateOrCreate(
+            ['slug' => 'finance_admin'],
+            [
+                'name' => 'Sous-Admin Finance',
+                'description' => 'Rôle finance (tests)',
+                'is_super_admin' => false,
+            ]
+        );
+        $financeRole->permissions()->syncWithoutDetaching([$perm->id => ['access_level' => 'oui']]);
+
+        $financeAdmin = User::factory()->create([
+            'role_id' => $financeRole->id,
+            'is_pro' => false,
+        ]);
+
+        $assignedClient = User::factory()->create([
+            'is_pro' => true,
+            'assigned_user' => $financeAdmin->id,
+        ]);
+        $nonAssignedClient = User::factory()->create([
+            'is_pro' => true,
+            'assigned_user' => null,
+        ]);
+
+        foreach ([$assignedClient, $nonAssignedClient] as $client) {
+            CreditProfile::updateOrCreate(
+                ['user_id' => $client->id],
+                [
+                    'credit_limite' => 500000,
+                    'credit_disponible' => 500000,
+                    'score_fiabilite' => 60,
+                    'niveau_risque' => 'moyen',
+                    'est_bloque' => false,
+                    'total_encours' => 0,
+                ]
+            );
+        }
+
+        $creanceAssigned = $this->creanceService->creerCreance(
+            $assignedClient,
+            10000,
+            'Créance assignée (pending list)',
+            now()->addDays(30)->toDateString(),
+            $this->admin
+        );
+
+        $creanceNonAssigned = $this->creanceService->creerCreance(
+            $nonAssignedClient,
+            12000,
+            'Créance non assignée (pending list)',
+            now()->addDays(30)->toDateString(),
+            $this->admin
+        );
+
+        $txAssigned = $this->creanceService->soumettreRembours(
+            $assignedClient,
+            $creanceAssigned,
+            4000,
+            'paiement_partiel'
+        );
+
+        $txNonAssigned = $this->creanceService->soumettreRembours(
+            $nonAssignedClient,
+            $creanceNonAssigned,
+            3000,
+            'paiement_partiel'
+        );
+
+        $this->assertEquals('en_attente', $txAssigned->statut);
+        $this->assertEquals('en_attente', $txNonAssigned->statut);
+
+        $res = $this->actingAs($financeAdmin)
+            ->getJson('/api/v1/creances/transactions/en-attente?per_page=50');
+
+        $res->assertOk()->assertJsonPath('success', true);
+
+        $ids = collect($res->json('data.data'))->pluck('id')->map(fn($v) => (string) $v)->values();
+        $this->assertTrue($ids->contains((string) $txAssigned->id));
+        $this->assertFalse($ids->contains((string) $txNonAssigned->id));
+    }
+
+    public function test_sous_admin_ne_voit_que_transactions_validees_de_ses_pro_assignes(): void
+    {
+        $perm = Permission::query()->updateOrCreate(
+            ['slug' => 'credits.manage'],
+            [
+                'name' => 'Gérer crédit',
+                'module' => 'Crédit',
+                'description' => 'Permission crédit (tests)',
+            ]
+        );
+
+        $financeRole = Role::query()->updateOrCreate(
+            ['slug' => 'finance_admin'],
+            [
+                'name' => 'Sous-Admin Finance',
+                'description' => 'Rôle finance (tests)',
+                'is_super_admin' => false,
+            ]
+        );
+        $financeRole->permissions()->syncWithoutDetaching([$perm->id => ['access_level' => 'oui']]);
+
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+
+        $superAdmin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'is_pro' => false,
+        ]);
+
+        $financeAdmin = User::factory()->create([
+            'role_id' => $financeRole->id,
+            'is_pro' => false,
+        ]);
+
+        $assignedClient = User::factory()->create([
+            'is_pro' => true,
+            'assigned_user' => $financeAdmin->id,
+        ]);
+        $nonAssignedClient = User::factory()->create([
+            'is_pro' => true,
+            'assigned_user' => null,
+        ]);
+
+        foreach ([$assignedClient, $nonAssignedClient] as $client) {
+            CreditProfile::updateOrCreate(
+                ['user_id' => $client->id],
+                [
+                    'credit_limite' => 500000,
+                    'credit_disponible' => 500000,
+                    'score_fiabilite' => 60,
+                    'niveau_risque' => 'moyen',
+                    'est_bloque' => false,
+                    'total_encours' => 0,
+                ]
+            );
+        }
+
+        $creanceAssigned = $this->creanceService->creerCreance(
+            $assignedClient,
+            10000,
+            'Créance assignée (validated list)',
+            now()->addDays(30)->toDateString(),
+            $superAdmin
+        );
+
+        $creanceNonAssigned = $this->creanceService->creerCreance(
+            $nonAssignedClient,
+            12000,
+            'Créance non assignée (validated list)',
+            now()->addDays(30)->toDateString(),
+            $superAdmin
+        );
+
+        $txAssigned = $this->creanceService->soumettreRembours(
+            $assignedClient,
+            $creanceAssigned,
+            4000,
+            'paiement_partiel'
+        );
+
+        $txNonAssigned = $this->creanceService->soumettreRembours(
+            $nonAssignedClient,
+            $creanceNonAssigned,
+            3000,
+            'paiement_partiel'
+        );
+
+        $this->creanceService->validerPaiement($txAssigned, $superAdmin);
+        $this->creanceService->validerPaiement($txNonAssigned, $superAdmin);
+
+        $res = $this->actingAs($financeAdmin)
+            ->getJson('/api/v1/creances/transactions/validees?per_page=50');
+
+        $res->assertOk()->assertJsonPath('success', true);
+
+        $ids = collect($res->json('data.data'))->pluck('id')->map(fn($v) => (string) $v)->values();
+        $this->assertTrue($ids->contains((string) $txAssigned->id));
+        $this->assertFalse($ids->contains((string) $txNonAssigned->id));
     }
 
     public function test_admin_ne_peut_pas_creer_creance_si_depasse_limite_meme_si_bypass_envoye(): void

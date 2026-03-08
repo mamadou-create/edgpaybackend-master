@@ -1140,11 +1140,17 @@ class CreanceController extends Controller
      */
     public function transactionsEnAttente(Request $request): JsonResponse
     {
+        /** @var User|null $actor */
+        $actor = Auth::user();
+
         $query = CreanceTransaction::with([
                 'creance:id,reference',
                 'client:id,display_name,phone',
             ])
             ->where('statut', 'en_attente')
+            ->when($actor instanceof User && !$this->isSuperAdminUser($actor), fn($q) =>
+                $q->whereHas('client', fn($u) => $u->where('assigned_user', $actor->id))
+            )
             ->orderByDesc('created_at');
 
         $page = $query->paginate($request->per_page ?? 20);
@@ -1168,8 +1174,14 @@ class CreanceController extends Controller
      */
     public function transactionsValidees(Request $request): JsonResponse
     {
+        /** @var User|null $actor */
+        $actor = Auth::user();
+
         $query = CreanceTransaction::with(['creance', 'client', 'validateur'])
             ->where('statut', 'valide')
+            ->when($actor instanceof User && !$this->isSuperAdminUser($actor), fn($q) =>
+                $q->whereHas('client', fn($u) => $u->where('assigned_user', $actor->id))
+            )
             ->orderByDesc('valide_at')
             ->orderByDesc('created_at');
 
