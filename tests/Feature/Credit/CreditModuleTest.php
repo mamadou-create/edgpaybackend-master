@@ -1468,6 +1468,104 @@ class CreditModuleTest extends TestCase
         });
     }
 
+    public function test_sous_admin_notifie_uniquement_super_admin_pour_remboursement_creance(): void
+    {
+        Mail::fake();
+        config(['edgpay.credit.reimbursement_notify_emails' => []]);
+        config(['edgpay.credit.reimbursement_mail_mode' => 'sync']);
+
+        $perm = Permission::query()->updateOrCreate(
+            ['slug' => 'credits.manage'],
+            [
+                'name' => 'Gérer crédit',
+                'module' => 'Crédit',
+                'description' => 'Permission crédit (tests)',
+            ]
+        );
+
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+        $superAdmin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'email' => 'superadmin@example.test',
+            'is_pro' => false,
+        ]);
+
+        $creditAdminRole = Role::query()->create([
+            'name' => 'Admin Crédit (tests)',
+            'slug' => 'admin_credit_non_super_test',
+            'description' => 'Rôle test non super',
+            'is_super_admin' => false,
+        ]);
+        $creditAdminRole->permissions()->attach($perm->id, ['access_level' => 'oui']);
+
+        $creditAdmin = User::factory()->create([
+            'role_id' => $creditAdminRole->id,
+            'email' => 'credit.admin@example.test',
+            'is_pro' => false,
+        ]);
+
+        $financeRole = Role::query()->updateOrCreate(
+            ['slug' => 'finance_admin'],
+            [
+                'name' => 'Sous-Admin Finance',
+                'description' => 'Rôle finance (tests)',
+                'is_super_admin' => false,
+            ]
+        );
+        $financeRole->permissions()->syncWithoutDetaching([$perm->id => ['access_level' => 'oui']]);
+
+        $subAdmin = User::factory()->create([
+            'role_id' => $financeRole->id,
+            'is_pro' => false,
+            'assigned_user' => null,
+        ]);
+
+        CreditProfile::updateOrCreate(
+            ['user_id' => $subAdmin->id],
+            [
+                'credit_limite' => 500000,
+                'credit_disponible' => 500000,
+                'score_fiabilite' => 60,
+                'niveau_risque' => 'moyen',
+                'est_bloque' => false,
+                'total_encours' => 0,
+            ]
+        );
+
+        $creance = $this->creanceService->creerCreance(
+            $subAdmin,
+            12000,
+            'Creance (sub-admin to super-admin notify test)',
+            now()->addDays(30)->toDateString(),
+            $this->admin
+        );
+
+        $this->actingAs($subAdmin);
+        $response = $this
+            ->withHeader('X-Idempotency-Key', Str::uuid()->toString())
+            ->postJson(
+                '/api/v1/creances/' . $creance->id . '/payer',
+                [
+                    'montant' => 2000,
+                    'type' => 'paiement_partiel',
+                ]
+            );
+
+        $response->assertStatus(201);
+
+        Mail::assertSent(CreanceReimbursementSubmittedMail::class, function ($mailable) use ($superAdmin, $creditAdmin) {
+            return $mailable->hasTo($superAdmin->email)
+                && ! $mailable->hasTo($creditAdmin->email);
+        });
+    }
+
     public function test_sous_admin_ne_voit_que_transactions_en_attente_de_ses_pro_assignes(): void
     {
         $perm = Permission::query()->updateOrCreate(

@@ -738,6 +738,24 @@ class TopupRequestController extends Controller
      */
     private function resolveTopupAdminRecipients(User $requester): array
     {
+        // Si la demande vient d'un sous-admin, notifier uniquement les super-admins.
+        $requesterRoleSlug = (string) optional($requester->role)->slug;
+        if (in_array($requesterRoleSlug, [
+            RoleEnum::SUPPORT_ADMIN,
+            RoleEnum::FINANCE_ADMIN,
+            RoleEnum::COMMERCIAL_ADMIN,
+        ], true)) {
+            return User::whereHas('role', function ($query) {
+                $query->where('is_super_admin', true);
+            })
+                ->whereNotNull('email')
+                ->pluck('email')
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
+        }
+
         // Si le PRO est assigné à un sous-admin, notifier UNIQUEMENT ce sous-admin.
         // Aucun fallback super-admin dans ce cas.
         if (!empty($requester->assigned_user)) {

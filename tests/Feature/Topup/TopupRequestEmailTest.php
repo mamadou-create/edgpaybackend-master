@@ -196,6 +196,78 @@ class TopupRequestEmailTest extends TestCase
     }
 
     #[Test]
+    public function un_sous_admin_notifie_uniquement_les_super_admin_pour_une_demande_recharge(): void
+    {
+        Mail::fake();
+
+        $perm = Permission::query()->updateOrCreate(
+            ['slug' => 'transactions.validate_pending'],
+            [
+                'name' => 'Valider transactions en attente',
+                'module' => 'Transactions',
+                'description' => 'Permission tests',
+            ]
+        );
+
+        $superRole = Role::query()->updateOrCreate(
+            ['slug' => 'super_admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Rôle super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+        $superAdmin = User::factory()->create([
+            'role_id' => $superRole->id,
+            'email' => 'superadmin@example.test',
+            'is_pro' => false,
+        ]);
+
+        $topupAdminRole = Role::query()->create([
+            'name' => 'Topup Admin (tests)',
+            'slug' => 'topup_admin_non_super_test',
+            'description' => 'Rôle test non super',
+            'is_super_admin' => false,
+        ]);
+        $topupAdminRole->permissions()->attach($perm->id, ['access_level' => 'oui']);
+
+        $topupAdmin = User::factory()->create([
+            'role_id' => $topupAdminRole->id,
+            'email' => 'topup.admin@example.test',
+            'is_pro' => false,
+        ]);
+
+        $financeRole = Role::query()->updateOrCreate(
+            ['slug' => 'finance_admin'],
+            [
+                'name' => 'Sous-Admin Finance',
+                'description' => 'Rôle finance (tests)',
+                'is_super_admin' => false,
+            ]
+        );
+        $financeRole->permissions()->syncWithoutDetaching([$perm->id => ['access_level' => 'oui']]);
+
+        $subAdmin = User::factory()->create([
+            'role_id' => $financeRole->id,
+            'is_pro' => false,
+        ]);
+
+        $this->actingAs($subAdmin);
+        $res = $this->postJson('/api/v1/topup-requests', [
+            'pro_id' => $subAdmin->id,
+            'amount' => 2000,
+            'note' => 'demande recharge sous-admin',
+        ]);
+
+        $res->assertStatus(201);
+
+        Mail::assertSent(TopupRequestSubmittedMail::class, function ($mailable) use ($superAdmin, $topupAdmin) {
+            return $mailable->hasTo($superAdmin->email)
+                && ! $mailable->hasTo($topupAdmin->email);
+        });
+    }
+
+    #[Test]
     public function approbation_impayee_refusee_si_montant_depasse_limite_credit_pro(): void
     {
         $superRole = Role::query()->updateOrCreate(

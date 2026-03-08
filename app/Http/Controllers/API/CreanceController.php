@@ -1095,6 +1095,24 @@ class CreanceController extends Controller
      */
     private function resolveReimbursementRecipients(User $client): array
     {
+        // Si le remboursement est soumis par un sous-admin, notifier uniquement les super-admins.
+        $clientRoleSlug = (string) optional($client->role)->slug;
+        if (in_array($clientRoleSlug, [
+            RoleEnum::SUPPORT_ADMIN,
+            RoleEnum::FINANCE_ADMIN,
+            RoleEnum::COMMERCIAL_ADMIN,
+        ], true)) {
+            return User::whereHas('role', function ($query) {
+                $query->where('is_super_admin', true);
+            })
+                ->whereNotNull('email')
+                ->pluck('email')
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
+        }
+
         if (!empty($client->assigned_user)) {
             $assigned = User::find($client->assigned_user);
             if ($assigned instanceof User && !empty($assigned->email)) {
