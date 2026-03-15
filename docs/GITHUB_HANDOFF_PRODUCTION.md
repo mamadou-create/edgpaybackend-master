@@ -24,8 +24,11 @@ Ce dépôt contient une base de travail exploitable pour reprendre la mise en pr
 - `config/whatsapp.php`
 - `routes/api.php`
 - `tests/Feature/WhatsApp/WhatsAppFintechTest.php`
+- `.env.production.example`
 - `docs/WHATSAPP_WEBHOOK_SETUP.md`
 - `docs/WHATSAPP_WINDOWS_WORKER.md`
+- `docs/PRODUCTION_ROLLOUT_CHECKLIST.md`
+- `docs/WHATSAPP_FINAL_VALIDATION_CHECKLIST.md`
 
 ## Vérifications déjà validées
 
@@ -48,6 +51,13 @@ Ce dépôt contient une base de travail exploitable pour reprendre la mise en pr
 5. désactiver toute aide de développement autour de l'exposition OTP avant ouverture réelle
 6. revalider le flux entrant réel WhatsApp depuis Meta sur l'URL publique finale
 7. vérifier la stratégie de logs, monitoring et relance en cas d'échec queue/webhook
+
+## Documents à lire en premier
+
+1. `docs/GITHUB_HANDOFF_PRODUCTION.md`
+2. `docs/PRODUCTION_ROLLOUT_CHECKLIST.md`
+3. `docs/WHATSAPP_FINAL_VALIDATION_CHECKLIST.md`
+4. `docs/WHATSAPP_WEBHOOK_SETUP.md`
 
 ## Commandes utiles pour reprise
 
