@@ -1101,7 +1101,7 @@ class WalletService
                 'user_id' => $fromUserId,
                 'amount' => $amount,
                 'currency' => 'GNF',
-                'status' => 'pending',
+                'status' => HelperStatus::PENDING,
                 'description' => $description ?? "Demande de retrait vers $toUserId",
                 'metadata' => array_merge($metadata ?? [], [
                     'to_user_id' => $toUserId,
@@ -1132,7 +1132,7 @@ class WalletService
             return [
                 'success' => true,
                 'withdrawal_request_id' => $withdrawalRequest->id,
-                'status' => 'pending',
+                'status' => HelperStatus::PENDING,
                 'message' => 'Demande de retrait créée avec succès',
                 'blocked_amount' => $fromWallet->blocked_amount
             ];

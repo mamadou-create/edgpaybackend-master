@@ -72,6 +72,18 @@ class SystemSettingRepository implements SystemSettingRepositoryInterface
                 'description' => 'Pourcentage de frais appliqué aux transferts client->client strictement supérieurs à 1 000 000 GNF',
                 'order' => 33,
             ],
+            'chatbot_intent_keywords_prepaid_bill' => [
+                'type' => 'string',
+                'group' => 'chatbot',
+                'description' => 'Mots-clés chatbot pour ouvrir le paiement facture prépayée (séparés par des virgules)',
+                'order' => 40,
+            ],
+            'chatbot_intent_keywords_postpaid_bill' => [
+                'type' => 'string',
+                'group' => 'chatbot',
+                'description' => 'Mots-clés chatbot pour ouvrir le paiement facture postpayée (séparés par des virgules)',
+                'order' => 41,
+            ],
         ];
 
         return $definitions[$key] ?? null;

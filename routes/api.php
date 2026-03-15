@@ -20,6 +20,9 @@ use App\Http\Controllers\API\SmsController;
 use App\Http\Controllers\API\SystemSettingController;
 use App\Http\Controllers\API\TopupRequestController;
 use App\Http\Controllers\API\ClientWalletController;
+use App\Http\Controllers\API\ChatbotController;
+use App\Http\Controllers\API\WhatsAppFintechController;
+use App\Http\Controllers\API\WhatsAppWebhookController;
 use App\Http\Controllers\API\WalletController;
 use App\Http\Controllers\API\WalletTransactionController;
 use App\Http\Controllers\API\WithdrawalRequestController;
@@ -44,6 +47,8 @@ use Pusher\Pusher;
 Route::prefix('v1')->group(function () {
     Route::post('register', [AuthController::class, 'register']);
     Route::post('login', [AuthController::class, 'login']);
+    Route::get('webhook/whatsapp', [WhatsAppWebhookController::class, 'verify']);
+    Route::post('webhook/whatsapp', [WhatsAppWebhookController::class, 'receive']);
     Route::post('client/token', [ApiClientController::class, 'tokenClient']);
     // Route::post('client/token', [ApiClientController::class, 'token']);
     // Public: maintenance status (used by mobile/web app before login)
@@ -58,6 +63,16 @@ Route::prefix('v1')->group(function () {
     Route::post('resend-verification-phone', [AuthController::class, 'resendVerificationSms']);
     Route::post('resend-verification-email', [AuthController::class, 'resendVerificationEmail']);
     Route::post('users', [UserController::class, 'store']); // 🆕 Création utilisateur
+
+    Route::prefix('whatsapp')->group(function () {
+        Route::post('auth/create-user', [WhatsAppFintechController::class, 'createUser']);
+        Route::post('auth/link-account', [WhatsAppFintechController::class, 'linkAccount']);
+        Route::post('auth/verify-otp', [WhatsAppFintechController::class, 'verifyOtp']);
+        Route::get('wallet/balance', [WhatsAppFintechController::class, 'balance']);
+        Route::post('wallet/send', [WhatsAppFintechController::class, 'send']);
+        Route::get('transactions/history', [WhatsAppFintechController::class, 'history']);
+        Route::post('support/create', [WhatsAppFintechController::class, 'support']);
+    });
 });
 
 // ----------------------
@@ -450,6 +465,9 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
     Route::put('/messages/conversation/{userId}/read-all', [MessageController::class, 'markConversationAsRead']);
     Route::get('/messages/unread-count', [MessageController::class, 'getUnreadCount']);
     Route::get('/messages/recent-conversations', [MessageController::class, 'getRecentConversations']);
+
+    // Chatbot fintech
+    Route::post('/chat/message', [ChatbotController::class, 'message']);
 });
 
 

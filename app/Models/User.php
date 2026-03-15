@@ -30,7 +30,9 @@ class User extends Authenticatable implements JWTSubject
         'id',
         'email',
         'phone',
+        'whatsapp_phone',
         'display_name',
+        'date_of_birth',
         'profile_photo_path',
         'role_id',
         'is_pro',
@@ -38,11 +40,14 @@ class User extends Authenticatable implements JWTSubject
         'commission_portefeuille',
         'status',
         'password',
+        'pin_hash',
         'profile_photo_path',
         'otp',
         'two_factor_enabled',
         'two_factor_token',
         'two_factor_expires_at',
+        'whatsapp_verified_at',
+        'phone_verified_at',
         'activation_token',
         'email_verified_at',
         'activation_account_expires_at',
@@ -58,6 +63,7 @@ class User extends Authenticatable implements JWTSubject
      */
     protected $hidden = [
         'password',
+        'pin_hash',
         'remember_token',
         'two_factor_token',
         'activation_token',
@@ -73,6 +79,9 @@ class User extends Authenticatable implements JWTSubject
     {
         return [
             'email_verified_at' => 'datetime',
+            'date_of_birth' => 'date',
+            'whatsapp_verified_at' => 'datetime',
+            'phone_verified_at' => 'datetime',
             'activation_account_expires_at' => 'datetime',
             'password' => 'hashed',
             'is_pro' => 'boolean',

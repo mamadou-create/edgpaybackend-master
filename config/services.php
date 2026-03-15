@@ -60,4 +60,11 @@ return [
         'secret_token' => env('NIMBA_SECRET_TOKEN'),
     ],
 
+    'whatsapp' => [
+        'access_token' => env('WHATSAPP_ACCESS_TOKEN'),
+        'phone_number_id' => env('WHATSAPP_PHONE_NUMBER_ID'),
+        'graph_url' => env('WHATSAPP_GRAPH_URL', 'https://graph.facebook.com/v21.0'),
+        'app_secret' => env('WHATSAPP_APP_SECRET'),
+    ],
+
 ];
