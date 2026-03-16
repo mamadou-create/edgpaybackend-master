@@ -18,35 +18,48 @@ class ChatbotService
     private const CACHE_TTL_MINUTES = 30;
     private const UNKNOWN_ATTEMPT_THRESHOLD = 2;
     private const DEFAULT_TRANSACTION_LIMIT = 5000000;
+    private array $currentAgentProfile = [];
 
     public function __construct(
         private WalletService $walletService,
         private NimbaSmsService $smsService,
+        private AssistantMemoryService $assistantMemoryService,
+        private NimbaAiAssistantService $aiAssistantService,
     ) {}
 
-    public function handle(User $user, string $message): array
+    public function handle(User $user, string $message, ?string $selectedAgent = null): array
     {
         $message = trim($message);
+        $this->currentAgentProfile = $this->resolveConversationalAgent($selectedAgent, $user);
         $state = $this->getState($user);
         $entities = $this->extractEntities($message);
         $sessionId = $this->getSessionId($user, $state);
+        $analysis = $this->analyzeIncomingMessage($message, $entities, $state);
 
         $this->storeHistory(
             user: $user,
             sessionId: $sessionId,
             role: 'user',
             content: $message,
-            intent: null,
+            intent: $analysis['intent_guess'] ?? null,
             entities: $entities,
             context: $state,
+            metadata: Arr::except($analysis, ['intent_guess']),
         );
 
         $response = $this->handleStatefulFlow($user, $message, $entities, $state);
 
         if ($response === null) {
             $intent = $this->detectIntent($message);
-            $response = $this->handleIntent($user, $message, $intent, $entities, $state);
+            $knowledgeResponse = $this->resolveKnowledgeResponse($user, $message);
+            if ($knowledgeResponse !== null && $this->shouldPreferKnowledgeResponse($message, $intent)) {
+                $response = $knowledgeResponse;
+            } else {
+                $response = $this->handleIntent($user, $message, $intent, $entities, $state);
+            }
         }
+
+        $response['metadata'] = $this->decorateResponseMetadata($user, $response, $analysis);
 
         $this->storeHistory(
             user: $user,
@@ -59,6 +72,8 @@ class ChatbotService
             metadata: $response['metadata'] ?? [],
             escalated: (bool) ($response['support_transferred'] ?? false),
         );
+
+        $this->updateLongTermMemory($user, $response);
 
         Log::info('chatbot.message_handled', [
             'user_id' => $user->id,
@@ -111,6 +126,11 @@ class ChatbotService
         array $state,
     ): array {
         return match ($intent) {
+            'GREETING' => $this->handleGreeting($user),
+            'HELP' => $this->handleHelp($user),
+            'THANKS' => $this->handleThanks($user),
+            'SERVICE_INFO' => $this->handleServiceInfo($user),
+            'FEES_INFO' => $this->handleFeesInfo($user),
             'CHECK_BALANCE' => $this->handleBalance($user),
             'SEND_MONEY' => $this->handleSendMoney($user, $entities),
             'TRANSACTION_HISTORY' => $this->handleTransactionHistory($user),
@@ -121,8 +141,106 @@ class ChatbotService
             'ACCOUNT_INFO' => $this->handleAccountInfo($user),
             'SUPPORT_HELP' => $this->handleSupport($user, $message, 'user_requested_support'),
             'SECURITY_HELP' => $this->handleSecurityHelp($user),
-            default => $this->handleUnknown($user, $message, $state),
+            default => $this->resolveKnowledgeResponse($user, $message)
+                ?? $this->handleUnknown($user, $message, $state),
         };
+    }
+
+    private function handleGreeting(User $user): array
+    {
+        $this->clearState($user);
+
+        return $this->buildResponse(
+            reply: sprintf(
+                '%s %s. Agent actif: %s. Je peux vous aider rapidement avec votre solde, un transfert, votre historique, un dépôt, un retrait ou vos factures EDG.',
+                $this->timeBasedGreeting(),
+                $user->display_name,
+                $this->currentAgentLabel(),
+            ),
+            intent: 'GREETING',
+            buttons: $this->defaultButtons($user),
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'summary' => $this->buildCapabilitySummary($user),
+                'recent_activity' => $this->describeRecentActivity($user),
+            ]),
+        );
+    }
+
+    private function handleHelp(User $user): array
+    {
+        $this->clearState($user);
+
+        return $this->buildResponse(
+            reply: "Voici ce que je peux faire pour vous :\n- consulter votre solde\n- envoyer de l'argent\n- montrer l'historique récent\n- lancer un dépôt ou un retrait\n- ouvrir le paiement EDG\n- vous orienter vers le support si nécessaire",
+            intent: 'HELP',
+            buttons: $this->defaultButtons($user),
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'agent_note' => 'Agent actif : ' . $this->currentAgentLabel(),
+                'summary' => $this->buildCapabilitySummary($user),
+                'recent_activity' => $this->describeRecentActivity($user),
+                'tips' => [
+                    'Essayez par exemple : Quel est mon solde ?',
+                    'Ou encore : Envoyer 25000 à 622000000',
+                    'Vous pouvez aussi demander : Quels sont les frais ?',
+                ],
+            ]),
+        );
+    }
+
+    private function handleServiceInfo(User $user): array
+    {
+        $this->clearState($user);
+
+        return $this->buildResponse(
+            reply: 'EdgPay vous permet de consulter votre solde, envoyer de l\'argent, suivre vos transactions, gérer vos dépôts et retraits, puis payer certaines factures comme EDG. NIMBA vous guide en langage naturel, prépare les étapes et sécurise les opérations sensibles avec OTP ou validation renforcée.',
+            intent: 'SERVICE_INFO',
+            buttons: $this->mergeButtons(
+                [
+                    $this->button('Vérifier mon solde'),
+                    $this->button('Envoyer de l\'argent'),
+                    $this->button('Quels sont les frais ?'),
+                ],
+                $this->billButtons($user),
+            ),
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'summary' => ['solde', 'transfert', 'historique', 'paiements EDG', 'sécurité'],
+                'tips' => [
+                    'Essayez : Montre-moi mon historique.',
+                    'Ou : Comment sécuriser mon compte ?',
+                ],
+            ]),
+        );
+    }
+
+    private function handleFeesInfo(User $user): array
+    {
+        $this->clearState($user);
+
+        return $this->buildResponse(
+            reply: 'Les frais dépendent du type d\'opération et du parcours concerné. NIMBA peut vous orienter vers le bon flow, puis l\'application vous affiche toujours les validations utiles avant confirmation. Si vous voulez un détail précis pour votre cas, je peux vous guider vers le transfert, l\'historique ou le support.',
+            intent: 'FEES_INFO',
+            buttons: [
+                $this->button('Envoyer de l\'argent'),
+                $this->button('Historique des transactions'),
+                $this->button('Support client'),
+            ],
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'tips' => [
+                    'Posez par exemple : Envoyer 25000 à 622000000.',
+                    'Ou : Montre-moi mes dernières transactions.',
+                ],
+            ]),
+        );
+    }
+
+    private function handleThanks(User $user): array
+    {
+        return $this->buildResponse(
+            reply: 'Avec plaisir. Si vous voulez, je peux continuer avec votre solde, un transfert, vos factures EDG ou le support.',
+            intent: 'THANKS',
+            buttons: $this->defaultButtons($user),
+            metadata: $this->buildPersonalizedMetadata($user),
+        );
     }
 
     private function handleBalance(User $user): array
@@ -142,12 +260,12 @@ class ChatbotService
                 ],
                 $this->billButtons($user),
             ),
-            metadata: [
+            metadata: $this->buildPersonalizedMetadata($user, [
                 'action' => 'open_wallet_balance',
                 'available_balance' => $available,
                 'blocked_amount' => (int) $wallet->blocked_amount,
                 'currency' => $wallet->currency ?? 'GNF',
-            ],
+            ]),
         );
     }
 
@@ -187,7 +305,9 @@ class ChatbotService
             return $this->buildResponse(
                 reply: 'À quel numéro voulez-vous envoyer l\'argent ?',
                 intent: 'SEND_MONEY',
-                buttons: [$this->button('Annuler')],
+                buttons: $this->mergeButtons([
+                    $this->button('Annuler'),
+                ], $this->buildFrequentBeneficiaryButtons($user)),
                 awaiting: 'send_recipient',
                 metadata: ['amount' => $amount],
             );
@@ -221,7 +341,9 @@ class ChatbotService
         return $this->buildResponse(
             reply: 'À quel numéro voulez-vous envoyer l\'argent ?',
             intent: 'SEND_MONEY',
-            buttons: [$this->button('Annuler')],
+            buttons: $this->mergeButtons([
+                $this->button('Annuler'),
+            ], $this->buildFrequentBeneficiaryButtons($user)),
             awaiting: 'send_recipient',
             metadata: ['amount' => $amount],
         );
@@ -272,8 +394,15 @@ class ChatbotService
         ];
         $this->putState($user, $state);
 
+        $riskAlert = null;
+        if (!$this->assistantMemoryService->isFrequentBeneficiary($user, $recipient) && $amount >= 250000) {
+            $riskAlert = 'Ce bénéficiaire n\'apparaît pas encore parmi vos contacts fréquents. Vérifiez bien son numéro avant de confirmer.';
+        }
+
         return $this->buildResponse(
-            reply: "Confirmez-vous l'envoi de {$this->formatAmount($amount)} GNF au numéro {$recipient->phone} ?",
+            reply: $riskAlert === null
+                ? "Confirmez-vous l'envoi de {$this->formatAmount($amount)} GNF au numéro {$recipient->phone} ?"
+                : "Confirmez-vous l'envoi de {$this->formatAmount($amount)} GNF au numéro {$recipient->phone} ?\n{$riskAlert}",
             intent: 'SEND_MONEY',
             buttons: [
                 $this->button('Oui, confirmer'),
@@ -287,6 +416,7 @@ class ChatbotService
                     'display_name' => $recipient->display_name,
                     'phone' => $recipient->phone,
                 ],
+                'risk_alert' => $riskAlert,
             ],
         );
     }
@@ -405,6 +535,8 @@ class ChatbotService
                 throw new \RuntimeException('Le transfert n\'a pas pu être exécuté.');
             }
 
+            $this->assistantMemoryService->rememberTransferRecipient($user, $recipient, 'app', $amount);
+
             $senderWallet->refresh();
             $this->clearState($user);
 
@@ -455,6 +587,7 @@ class ChatbotService
                 reply: 'Je n\'ai trouvé aucune transaction récente sur votre compte.',
                 intent: 'TRANSACTION_HISTORY',
                 buttons: $this->defaultButtons($user),
+                metadata: $this->buildPersonalizedMetadata($user),
             );
         }
 
@@ -477,10 +610,10 @@ class ChatbotService
                 ],
                 $this->billButtons($user),
             ),
-            metadata: [
+            metadata: $this->buildPersonalizedMetadata($user, [
                 'action' => 'open_transaction_history',
                 'transactions_count' => $transactions->count(),
-            ],
+            ]),
         );
     }
 
@@ -869,7 +1002,23 @@ class ChatbotService
 
     private function handleUnknown(User $user, string $message, array $state): array
     {
+        $aiAnswer = $this->buildAiFallbackResponse($user, $message, [
+            'channel' => 'app',
+            'mode' => 'chatbot',
+            'memory_summary' => $this->assistantMemoryService->memorySummaries($user, 3),
+            'agent_profile' => $this->currentAgentProfile,
+        ]);
+        if ($aiAnswer !== null) {
+            return $aiAnswer;
+        }
+
+        $applicationAnswer = $this->buildGenericApplicationKnowledgeResponse($user, $message);
+        if ($applicationAnswer !== null) {
+            return $applicationAnswer;
+        }
+
         $attempts = ((int) ($state['unknown_attempts'] ?? 0)) + 1;
+        $hint = $this->inferIntentHint($message);
 
         if ($attempts >= self::UNKNOWN_ATTEMPT_THRESHOLD) {
             return $this->handleSupport($user, $message, 'unrecognized_after_retries', ['attempts' => $attempts]);
@@ -881,16 +1030,160 @@ class ChatbotService
         ]);
 
         return $this->buildResponse(
-            reply: 'Je n\'ai pas bien compris. Vous pouvez demander votre solde, un envoi d\'argent, l\'historique, un dépôt, un retrait ou le support.',
+            reply: $hint !== null
+                ? "Je ne suis pas encore certain de votre demande. {$hint}"
+                : 'Je n\'ai pas bien compris. Vous pouvez demander votre solde, un envoi d\'argent, l\'historique, un dépôt, un retrait ou le support.',
             intent: 'UNKNOWN',
-            buttons: $this->defaultButtons($user),
-            metadata: ['attempts' => $attempts],
+            buttons: $this->buildContextualSuggestions($user, $message),
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'attempts' => $attempts,
+                'hint' => $hint,
+                'confidence' => 0.24,
+                'learning_signal' => 'needs_training',
+            ]),
+        );
+    }
+
+    private function buildAiFallbackResponse(User $user, string $message, array $context = []): ?array
+    {
+        if (!(bool) config('services.nimba_ai.enable_app_fallback', true)) {
+            return null;
+        }
+
+        $result = $this->aiAssistantService->answer($user, $message, $this->loadTranscript($user), $context);
+        if ($result === null) {
+            return null;
+        }
+
+        $this->clearState($user);
+
+        return $this->buildResponse(
+            reply: (string) ($result['reply'] ?? ''),
+            intent: 'AI_FALLBACK',
+            buttons: $this->mergeButtons([
+                $this->button('Aide'),
+                $this->button('Support client'),
+            ], $this->billButtons($user)),
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'knowledge_topic' => 'general_ai',
+                'confidence' => 0.66,
+                'ai_generated' => true,
+                'ai_provider' => $result['provider'] ?? config('services.nimba_ai.provider', 'chatgpt'),
+                'ai_model' => $result['model'] ?? null,
+                'finish_reason' => $result['finish_reason'] ?? null,
+                'knowledge_references' => $result['knowledge_references'] ?? [],
+                'web_references' => $result['web_references'] ?? [],
+                'web_search_provider' => $result['web_search_provider'] ?? null,
+                'selected_agent_key' => $this->currentAgentKey(),
+            ]),
+        );
+    }
+
+    private function resolveKnowledgeResponse(User $user, string $message): ?array
+    {
+        $knowledge = $this->matchAppKnowledge($message);
+        if ($knowledge === null) {
+            return null;
+        }
+
+        $this->clearState($user);
+
+        return $this->buildResponse(
+            reply: (string) ($knowledge['reply'] ?? ''),
+            intent: 'APP_KNOWLEDGE',
+            buttons: $this->knowledgeButtons($user, $knowledge),
+            metadata: $this->buildPersonalizedMetadata($user, array_filter([
+                'knowledge_key' => $knowledge['key'] ?? null,
+                'knowledge_topic' => $knowledge['knowledge_topic'] ?? 'application',
+                'action' => $knowledge['action'] ?? null,
+                'confidence' => 0.9,
+            ], fn ($value) => $value !== null)),
+        );
+    }
+
+    private function shouldPreferKnowledgeResponse(string $message, string $intent): bool
+    {
+        if ($intent === 'UNKNOWN') {
+            return true;
+        }
+
+        $normalized = $this->normalize($message);
+        $isQuestion = $this->matchesAny($normalized, [
+            'comment',
+            'combien',
+            'minimum',
+            'pourquoi',
+            'quand',
+            'ou',
+            'explique',
+            'c est quoi',
+            'ca marche',
+        ]);
+
+        if (!$isQuestion) {
+            return false;
+        }
+
+        return in_array($intent, [
+            'SEND_MONEY',
+            'DEPOSIT',
+            'WITHDRAW',
+            'PREPAID_BILL',
+            'POSTPAID_BILL',
+            'ACCOUNT_INFO',
+            'SECURITY_HELP',
+            'SERVICE_INFO',
+            'FEES_INFO',
+        ], true);
+    }
+
+    private function buildGenericApplicationKnowledgeResponse(User $user, string $message): ?array
+    {
+        if (!$this->looksLikeApplicationQuestion($message)) {
+            return null;
+        }
+
+        $this->clearState($user);
+
+        return $this->buildResponse(
+            reply: 'Oui, je peux répondre directement aux questions sur EdgPay. Dans l\'application, je peux vous expliquer le solde, les transferts, l\'historique, les dépôts, les retraits, la sécurité du compte et les parcours EDG prépayé ou postpayé. Posez votre question naturellement et je vous répondrai avec le fonctionnement réel du service.',
+            intent: 'APP_KNOWLEDGE',
+            buttons: $this->mergeButtons([
+                $this->button('Comment fonctionne le service ?'),
+                $this->button('Quels sont les frais ?'),
+                $this->button('Sécurité du compte'),
+            ], $this->defaultButtons($user)),
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'knowledge_key' => 'application_capabilities',
+                'knowledge_topic' => 'application',
+                'confidence' => 0.72,
+            ]),
         );
     }
 
     private function detectIntent(string $message): string
     {
         $normalized = $this->normalize($message);
+
+        if ($this->matchesConfiguredIntent($normalized, 'greeting')) {
+            return 'GREETING';
+        }
+
+        if ($this->matchesConfiguredIntent($normalized, 'help')) {
+            return 'HELP';
+        }
+
+        if ($this->matchesConfiguredIntent($normalized, 'thanks')) {
+            return 'THANKS';
+        }
+
+        if ($this->matchesConfiguredIntent($normalized, 'service_info')) {
+            return 'SERVICE_INFO';
+        }
+
+        if ($this->matchesConfiguredIntent($normalized, 'fees_info')) {
+            return 'FEES_INFO';
+        }
 
         if ($this->matchesConfiguredIntent($normalized, 'check_balance')) {
             return 'CHECK_BALANCE';
@@ -961,7 +1254,7 @@ class ChatbotService
             }
         }
 
-        if (preg_match('/(?:a|à)\s+([A-Za-zÀ-ÿ\-\']{2,}(?:\s+[A-Za-zÀ-ÿ\-\']{2,})?)/u', $clean, $nameMatch)) {
+        if (preg_match('/(?:a|à)\s+([A-Za-zÀ-ÿ\-\']{2,}(?:\s+[A-Za-zÀ-ÿ\-\']{2,}){0,2})/u', $clean, $nameMatch)) {
             $candidate = trim($nameMatch[1]);
             if (!preg_match('/^(62|65|66)\d{7}$/', preg_replace('/\s+/', '', $candidate) ?? '')) {
                 $entities['recipient_name'] = $candidate;
@@ -1215,6 +1508,7 @@ class ChatbotService
     {
         return $this->mergeButtons(
             [
+                $this->button('Aide'),
                 $this->button('Envoyer de l\'argent'),
                 $this->button('Vérifier mon solde'),
                 $this->button('Historique des transactions'),
@@ -1318,6 +1612,9 @@ class ChatbotService
     {
         $value = mb_strtolower($value, 'UTF-8');
         $value = str_replace(['é', 'è', 'ê', 'ë', 'à', 'â', 'î', 'ï', 'ô', 'ö', 'ù', 'û', 'ç'], ['e', 'e', 'e', 'e', 'a', 'a', 'i', 'i', 'o', 'o', 'u', 'u', 'c'], $value);
+        $value = preg_replace('/[^a-z0-9]+/u', ' ', $value) ?? $value;
+        $value = preg_replace('/\s+/', ' ', $value) ?? $value;
+
         return trim($value);
     }
 
@@ -1335,6 +1632,721 @@ class ChatbotService
     private function normalizePhone(string $phone): string
     {
         return preg_replace('/\D+/', '', $phone) ?? $phone;
+    }
+
+    private function buildContextualSuggestions(User $user, string $message): array
+    {
+        $normalized = $this->normalize($message);
+        $suggestions = [];
+
+        if (preg_match('/\d{4,9}/', $message)) {
+            $suggestions[] = $this->button('Envoyer de l\'argent');
+        }
+
+        if ($this->matchesAny($normalized, ['facture', 'edg', 'courant', 'compteur'])) {
+            $suggestions[] = $this->button('Facture prepayee');
+            $suggestions[] = $this->button('Facture postpayee');
+        }
+
+        if ($this->matchesAny($normalized, ['otp', 'pin', 'securite', 'code'])) {
+            $suggestions[] = $this->button('Sécurité du compte');
+        }
+
+        if ($this->matchesAny($normalized, ['frais', 'tarif', 'commission', 'cout'])) {
+            $suggestions[] = $this->button('Quels sont les frais ?');
+        }
+
+        if ($this->matchesAny($normalized, ['comment', 'fonctionne', 'service', 'edgpay', 'nimba'])) {
+            $suggestions[] = $this->button('Comment fonctionne le service ?');
+        }
+
+        $suggestions[] = $this->button('Aide');
+
+        return $this->mergeButtons(
+            $suggestions,
+            $this->buildFrequentBeneficiaryButtons($user),
+            $this->defaultButtons($user),
+        );
+    }
+
+    private function inferIntentHint(string $message): ?string
+    {
+        $normalized = $this->normalize($message);
+
+        if (preg_match('/\d{4,9}/', $message) && $this->matchesAny($normalized, ['envoyer', 'transfert', 'a'])) {
+            return 'Si vous voulez transférer, essayez une phrase comme : Envoyer 25000 à 622000000.';
+        }
+
+        if ($this->matchesAny($normalized, ['facture', 'edg', 'courant', 'compteur'])) {
+            return 'Si vous voulez payer EDG, vous pouvez choisir Facture prepayee ou Facture postpayee.';
+        }
+
+        if ($this->matchesAny($normalized, ['solde', 'balance'])) {
+            return 'Essayez par exemple : Quel est mon solde ?';
+        }
+
+        if ($this->matchesAny($normalized, ['frais', 'tarif', 'commission'])) {
+            return 'Vous pouvez demander simplement : Quels sont les frais ?';
+        }
+
+        if ($this->matchesAny($normalized, ['comment', 'service', 'fonctionne'])) {
+            return 'Essayez par exemple : Comment fonctionne le service ?';
+        }
+
+        return 'Vous pouvez aussi me dire simplement : aide.';
+    }
+
+    private function buildCapabilitySummary(User $user): array
+    {
+        $items = ['solde', 'transfert', 'historique', 'depot', 'retrait', 'support', 'frais'];
+
+        if ($this->supportsBillPayments($user)) {
+            $items[] = 'factures EDG';
+        }
+
+        return $items;
+    }
+
+    private function describeRecentActivity(User $user): string
+    {
+        $latest = WalletTransaction::query()
+            ->where('user_id', $user->id)
+            ->latest('created_at')
+            ->first(['type', 'amount', 'created_at', 'description', 'metadata']);
+
+        if (!$latest) {
+            return 'Aucune opération récente détectée.';
+        }
+
+        $amount = $this->formatAmount(abs((int) $latest->amount));
+        $date = Carbon::parse($latest->created_at)->format('d/m H:i');
+        $label = $this->describeTransactionLabel($latest);
+
+        return "Dernière opération: {$label} de {$amount} GNF le {$date}.";
+    }
+
+    private function buildPersonalizedMetadata(User $user, array $metadata = []): array
+    {
+        $suggestions = $this->buildPersonalizedSuggestions($user);
+        $smartSuggestions = $this->buildSmartSuggestions($user);
+        $memorySummary = $this->assistantMemoryService->memorySummaries($user, 3);
+        $automationSuggestions = $this->assistantMemoryService->automationSuggestions($user, 3);
+
+        if (!empty($suggestions) && !array_key_exists('personalized_suggestions', $metadata)) {
+            $metadata['personalized_suggestions'] = $suggestions;
+        }
+
+        if (!empty($smartSuggestions) && !array_key_exists('smart_suggestions', $metadata)) {
+            $metadata['smart_suggestions'] = $smartSuggestions;
+        }
+
+        if (!empty($memorySummary) && !array_key_exists('memory_summary', $metadata)) {
+            $metadata['memory_summary'] = $memorySummary;
+        }
+
+        if (!empty($automationSuggestions) && !array_key_exists('automation_suggestions', $metadata)) {
+            $metadata['automation_suggestions'] = $automationSuggestions;
+        }
+
+        return $metadata;
+    }
+
+    private function buildSmartSuggestions(User $user): array
+    {
+        return $this->buildFrequentBeneficiaryButtons($user);
+    }
+
+    private function buildFrequentBeneficiaryButtons(User $user): array
+    {
+        $memoryButtons = collect($this->assistantMemoryService->frequentBeneficiaries($user, 2))
+            ->map(fn (array $beneficiary): array => [
+                'label' => 'Envoyer à ' . $beneficiary['display_name'],
+                'value' => "Envoyer de l'argent à {$beneficiary['display_name']}",
+            ])
+            ->all();
+
+        if (!empty($memoryButtons)) {
+            return $memoryButtons;
+        }
+
+        $recipientCounts = WalletTransaction::query()
+            ->where('user_id', $user->id)
+            ->where('type', 'transfer_out')
+            ->latest('created_at')
+            ->limit(20)
+            ->get(['metadata'])
+            ->map(fn (WalletTransaction $transaction): ?string => Arr::get($transaction->metadata ?? [], 'to_user_id'))
+            ->filter()
+            ->countBy()
+            ->filter(fn (int $count): bool => $count >= 2)
+            ->sortDesc();
+
+        if ($recipientCounts->isEmpty()) {
+            return [];
+        }
+
+        $recipients = User::query()
+            ->whereIn('id', $recipientCounts->keys()->all())
+            ->get(['id', 'display_name', 'phone'])
+            ->keyBy('id');
+
+        $buttons = [];
+        foreach ($recipientCounts->take(2) as $recipientId => $count) {
+            $recipient = $recipients->get($recipientId);
+            if (!$recipient) {
+                continue;
+            }
+
+            $label = 'Envoyer à ' . $recipient->display_name;
+            $buttons[] = [
+                'label' => $label,
+                'value' => "Envoyer de l'argent à {$recipient->display_name}",
+            ];
+        }
+
+        return $buttons;
+    }
+
+    private function updateLongTermMemory(User $user, array $response): void
+    {
+        $intent = (string) ($response['intent'] ?? 'UNKNOWN');
+        $metadata = is_array($response['metadata'] ?? null) ? $response['metadata'] : [];
+
+        $topic = Arr::get($metadata, 'knowledge_topic');
+        if (is_string($topic) && $topic !== '') {
+            $this->assistantMemoryService->rememberKnowledgeTopic($user, $topic, 'app');
+        }
+
+        if ($intent === 'UNKNOWN') {
+            $hint = Arr::get($metadata, 'hint');
+            $message = is_string($hint) && $hint !== '' ? $hint : 'unknown';
+            $this->assistantMemoryService->rememberUnknownMessage($user, $message, 'app');
+        }
+    }
+
+    private function analyzeIncomingMessage(string $message, array $entities, array $state): array
+    {
+        $intentGuess = ($state['awaiting'] ?? null) !== null
+            ? (string) ($state['intent'] ?? 'STATEFUL_FLOW')
+            : $this->detectIntent($message);
+
+        $knowledgeTopic = $this->detectKnowledgeTopic($message, $intentGuess);
+
+        return [
+            'intent_guess' => $intentGuess,
+            'confidence' => $this->estimateIntentConfidence($intentGuess, $entities, $state),
+            'knowledge_topic' => $knowledgeTopic,
+            'learning_signal' => $intentGuess === 'UNKNOWN' ? 'review_required' : 'understood',
+        ];
+    }
+
+    private function decorateResponseMetadata(User $user, array $response, array $analysis): array
+    {
+        $metadata = $response['metadata'] ?? [];
+
+        if (!is_array($metadata)) {
+            $metadata = [];
+        }
+
+        if (!array_key_exists('confidence', $metadata)) {
+            $metadata['confidence'] = $analysis['confidence'] ?? 0.5;
+        }
+
+        if (!array_key_exists('knowledge_topic', $metadata) && ($analysis['knowledge_topic'] ?? null) !== null) {
+            $metadata['knowledge_topic'] = $analysis['knowledge_topic'];
+        }
+
+        if (!array_key_exists('learning_signal', $metadata)) {
+            $metadata['learning_signal'] = ($response['intent'] ?? 'UNKNOWN') === 'UNKNOWN'
+                ? 'needs_training'
+                : 'handled';
+        }
+
+        $metadata['selected_agent'] = $this->agentMetadataPayload();
+        $metadata['available_agents'] = $this->availableAgentPayloads();
+
+        if (($response['intent'] ?? null) === 'UNKNOWN') {
+            return $this->buildPersonalizedMetadata($user, $metadata);
+        }
+
+        return $metadata;
+    }
+
+    private function detectKnowledgeTopic(string $message, string $intentGuess): ?string
+    {
+        if ($intentGuess === 'APP_KNOWLEDGE') {
+            $knowledge = $this->matchAppKnowledge($message);
+            if ($knowledge !== null) {
+                return (string) ($knowledge['knowledge_topic'] ?? 'application');
+            }
+
+            return 'application';
+        }
+
+        if ($intentGuess === 'FEES_INFO') {
+            return 'fees';
+        }
+
+        if ($intentGuess === 'SECURITY_HELP') {
+            return 'security';
+        }
+
+        if ($intentGuess === 'SERVICE_INFO') {
+            return 'service';
+        }
+
+        $normalized = $this->normalize($message);
+
+        return match (true) {
+            $this->matchesAny($normalized, ['frais', 'tarif', 'commission']) => 'fees',
+            $this->matchesAny($normalized, ['otp', 'pin', 'fraude', 'securite']) => 'security',
+            $this->matchesAny($normalized, ['comment', 'fonctionne', 'service', 'edgpay', 'nimba']) => 'service',
+            $this->looksLikeApplicationQuestion($message) => 'application',
+            default => null,
+        };
+    }
+
+    private function estimateIntentConfidence(string $intent, array $entities, array $state): float
+    {
+        if (($state['awaiting'] ?? null) !== null) {
+            return 0.96;
+        }
+
+        return match ($intent) {
+            'UNKNOWN' => 0.24,
+            'AI_FALLBACK' => 0.66,
+            'SEND_MONEY' => isset($entities['amount']) && (isset($entities['phone']) || isset($entities['recipient_name'])) ? 0.93 : 0.76,
+            'APP_KNOWLEDGE' => 0.9,
+            'GREETING', 'HELP', 'THANKS', 'SERVICE_INFO', 'FEES_INFO', 'SECURITY_HELP' => 0.91,
+            default => 0.84,
+        };
+    }
+
+    private function matchAppKnowledge(string $message): ?array
+    {
+        $normalized = $this->normalize($message);
+        $knowledgeEntries = $this->getAppKnowledgeEntries();
+
+        if (!is_array($knowledgeEntries)) {
+            return null;
+        }
+
+        foreach ($knowledgeEntries as $key => $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $patterns = $entry['patterns'] ?? [];
+            if (!$this->matchesAny($normalized, is_array($patterns) ? $patterns : [])) {
+                continue;
+            }
+
+            $entry['key'] = $key;
+
+            if ($key === 'postpaid_minimum') {
+                $entry['reply'] = $this->buildPostpaidMinimumKnowledgeReply();
+            }
+
+            return $entry;
+        }
+
+        return null;
+    }
+
+    private function getAppKnowledgeEntries(): array
+    {
+        $knowledgeEntries = config('chatbot.app_knowledge', []);
+        if (!is_array($knowledgeEntries)) {
+            return [];
+        }
+
+        foreach (array_keys($knowledgeEntries) as $key) {
+            $override = $this->getAppKnowledgeOverride($key);
+            if ($override === null) {
+                continue;
+            }
+
+            $knowledgeEntries[$key] = array_merge($knowledgeEntries[$key], $override);
+        }
+
+        return $knowledgeEntries;
+    }
+
+    private function resolveConversationalAgent(?string $requestedKey, ?User $user = null): array
+    {
+        $agents = $this->configuredConversationalAgents();
+        if (!is_array($agents) || empty($agents)) {
+            return [
+                'key' => 'nimba',
+                'label' => 'NIMBA Classique',
+                'description' => 'Assistant EdgPay',
+                'system_prompt' => 'Style d agent: assistant polyvalent.',
+                'provider' => '',
+                'model' => '',
+                'is_default' => true,
+            ];
+        }
+
+        $normalizedKey = $this->normalizeAgentKey($requestedKey);
+        if ($normalizedKey === '' && $user !== null) {
+            $normalizedKey = $this->normalizeAgentKey($user->default_conversational_agent ?? null);
+        }
+
+        $defaultKey = $this->defaultConversationalAgentKey($agents);
+
+        if ($normalizedKey !== '' && isset($agents[$normalizedKey]) && is_array($agents[$normalizedKey])) {
+            return array_merge($agents[$normalizedKey], [
+                'key' => $normalizedKey,
+                'is_default' => $normalizedKey === $defaultKey,
+            ]);
+        }
+
+        $defaultAgent = is_array($agents[$defaultKey] ?? null) ? $agents[$defaultKey] : [];
+
+        return array_merge($defaultAgent, [
+            'key' => $defaultKey,
+            'is_default' => true,
+        ]);
+    }
+
+    private function currentAgentKey(): string
+    {
+        return (string) ($this->currentAgentProfile['key'] ?? 'nimba');
+    }
+
+    private function currentAgentLabel(): string
+    {
+        return (string) ($this->currentAgentProfile['label'] ?? 'NIMBA Classique');
+    }
+
+    private function agentMetadataPayload(): array
+    {
+        return [
+            'key' => $this->currentAgentKey(),
+            'label' => $this->currentAgentLabel(),
+            'description' => (string) ($this->currentAgentProfile['description'] ?? ''),
+            'provider' => (string) ($this->currentAgentProfile['provider'] ?? ''),
+            'model' => (string) ($this->currentAgentProfile['model'] ?? ''),
+            'is_default' => (bool) ($this->currentAgentProfile['is_default'] ?? false),
+        ];
+    }
+
+    private function availableAgentPayloads(): array
+    {
+        $agents = $this->configuredConversationalAgents();
+        if (!is_array($agents)) {
+            return [$this->agentMetadataPayload()];
+        }
+
+        $selectedKey = $this->currentAgentKey();
+
+        return collect($agents)
+            ->map(function ($agent, $key) use ($selectedKey): ?array {
+                if (!is_array($agent)) {
+                    return null;
+                }
+
+                return [
+                    'key' => (string) $key,
+                    'label' => (string) ($agent['label'] ?? $key),
+                    'description' => (string) ($agent['description'] ?? ''),
+                    'provider' => (string) ($agent['provider'] ?? ''),
+                    'model' => (string) ($agent['model'] ?? ''),
+                    'is_selected' => (string) $key === $selectedKey,
+                ];
+            })
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    private function configuredConversationalAgents(): array
+    {
+        $configured = config('chatbot.conversational_agents', []);
+        $override = SystemSetting::query()
+            ->where('key', 'chatbot_conversational_agents')
+            ->where('is_active', true)
+            ->first();
+
+        $overrideValue = $override?->formatted_value;
+        if (is_array($overrideValue) && !empty($overrideValue)) {
+            $normalized = $this->normalizeConfiguredAgents($overrideValue);
+            if (!empty($normalized)) {
+                return $normalized;
+            }
+        }
+
+        return is_array($configured) ? $configured : [];
+    }
+
+    private function normalizeConfiguredAgents(array $rawAgents): array
+    {
+        $normalized = [];
+
+        $isAssoc = Arr::isAssoc($rawAgents);
+        foreach ($rawAgents as $key => $agent) {
+            if (!is_array($agent)) {
+                continue;
+            }
+
+            $agentKey = $this->normalizeAgentKey($isAssoc ? $key : ($agent['key'] ?? null));
+            if ($agentKey === '') {
+                continue;
+            }
+
+            $label = trim((string) ($agent['label'] ?? ''));
+            if ($label === '') {
+                $label = strtoupper($agentKey);
+            }
+
+            $normalized[$agentKey] = [
+                'label' => $label,
+                'description' => trim((string) ($agent['description'] ?? '')),
+                'system_prompt' => trim((string) ($agent['system_prompt'] ?? 'Style d agent: assistant EdgPay.')),
+                'provider' => trim(strtolower((string) ($agent['provider'] ?? ''))),
+                'model' => trim((string) ($agent['model'] ?? '')),
+            ];
+        }
+
+        return $normalized;
+    }
+
+    private function defaultConversationalAgentKey(array $agents): string
+    {
+        $setting = SystemSetting::query()
+            ->where('key', 'chatbot_default_conversational_agent')
+            ->where('is_active', true)
+            ->first();
+
+        $configuredDefault = $this->normalizeAgentKey($setting?->formatted_value ?? $setting?->value ?? null);
+        if ($configuredDefault !== '' && isset($agents[$configuredDefault])) {
+            return $configuredDefault;
+        }
+
+        if (isset($agents['nimba'])) {
+            return 'nimba';
+        }
+
+        $firstKey = array_key_first($agents);
+
+        return is_string($firstKey) ? $firstKey : 'nimba';
+    }
+
+    private function normalizeAgentKey(mixed $value): string
+    {
+        return trim(strtolower((string) ($value ?? '')));
+    }
+
+    private function getAppKnowledgeOverride(string $key): ?array
+    {
+        $setting = SystemSetting::query()
+            ->where('key', "chatbot_app_knowledge_{$key}")
+            ->where('is_active', true)
+            ->first();
+
+        if (!$setting) {
+            return null;
+        }
+
+        $value = $setting->formatted_value;
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (!is_string($setting->value) || trim($setting->value) === '') {
+            return null;
+        }
+
+        $decoded = json_decode($setting->value, true);
+
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    private function knowledgeButtons(User $user, array $knowledge): array
+    {
+        $labels = $knowledge['buttons'] ?? [];
+        $buttons = [];
+
+        if (is_array($labels)) {
+            foreach ($labels as $label) {
+                if (!is_string($label) || trim($label) === '') {
+                    continue;
+                }
+
+                $buttons[] = $this->button($label);
+            }
+        }
+
+        return $this->mergeButtons($buttons, $this->billButtons($user));
+    }
+
+    private function buildPostpaidMinimumKnowledgeReply(): string
+    {
+        return 'Pour une facture EDG postpayée, il n\'y a pas un minimum fixe universel dans EdgPay. Le montant à régler dépend du restant dû de la créance affichée dans le parcours postpayé. Côté métier, le paiement est plafonné au montant restant, et s\'il ne reste rien à payer, aucun règlement n\'est nécessaire.';
+    }
+
+    private function looksLikeApplicationQuestion(string $message): bool
+    {
+        $normalized = $this->normalize($message);
+
+        return $this->matchesAny($normalized, [
+            'application',
+            'appli',
+            'app',
+            'edgpay',
+            'nimba',
+            'compte',
+            'portefeuille',
+            'wallet',
+            'solde',
+            'transfert',
+            'envoyer',
+            'historique',
+            'transaction',
+            'depot',
+            'retrait',
+            'facture',
+            'edg',
+            'prepay',
+            'postpay',
+            'otp',
+            'support',
+            'frais',
+            'securite',
+        ]);
+    }
+
+    private function buildPersonalizedSuggestions(User $user): array
+    {
+        $transactions = WalletTransaction::query()
+            ->where('user_id', $user->id)
+            ->latest('created_at')
+            ->limit(6)
+            ->get(['type', 'description', 'metadata']);
+
+        if ($transactions->isEmpty()) {
+            return [];
+        }
+
+        $suggestions = [];
+
+        foreach ($transactions as $transaction) {
+            $suggestion = $this->suggestionForTransaction($transaction, $user);
+            if ($suggestion !== null) {
+                $suggestions[] = $suggestion;
+            }
+        }
+
+        if ($transactions->count() >= 3) {
+            $suggestions[] = 'Historique des transactions';
+        }
+
+        return array_values(array_slice(array_unique($suggestions), 0, 4));
+    }
+
+    private function suggestionForTransaction(WalletTransaction $transaction, User $user): ?string
+    {
+        if ($this->supportsBillPayments($user)) {
+            if ($this->looksLikePrepaidBillTransaction($transaction)) {
+                return 'Facture prepayee';
+            }
+
+            if ($this->looksLikePostpaidBillTransaction($transaction)) {
+                return 'Facture postpayee';
+            }
+        }
+
+        $type = (string) $transaction->type;
+
+        return match (true) {
+            str_starts_with($type, 'transfer_') => 'Envoyer de l\'argent',
+            str_contains($type, 'withdraw') => 'Retrait',
+            str_contains($type, 'deposit'), str_contains($type, 'recharge'), str_starts_with($type, 'credit_') => 'Dépôt',
+            default => null,
+        };
+    }
+
+    private function describeTransactionLabel(WalletTransaction $transaction): string
+    {
+        $type = (string) $transaction->type;
+
+        if ($this->looksLikePrepaidBillTransaction($transaction)) {
+            return 'paiement EDG prépayé';
+        }
+
+        if ($this->looksLikePostpaidBillTransaction($transaction)) {
+            return 'paiement EDG postpayé';
+        }
+
+        return match (true) {
+            $type === 'transfer_out' => 'transfert envoyé',
+            $type === 'transfer_in' => 'transfert reçu',
+            str_contains($type, 'withdraw') => 'retrait',
+            str_contains($type, 'deposit'), str_contains($type, 'recharge'), str_starts_with($type, 'credit_') => 'dépôt',
+            default => $type,
+        };
+    }
+
+    private function looksLikePrepaidBillTransaction(WalletTransaction $transaction): bool
+    {
+        $haystack = $this->transactionSearchableText($transaction);
+
+        return $this->matchesAny($haystack, [
+            'prepay',
+            'prepayee',
+            'prepaye',
+            'achat courant',
+            'achat de courant',
+            'token edg',
+            'compteur prepaid',
+            'compteur prepaye',
+        ]);
+    }
+
+    private function looksLikePostpaidBillTransaction(WalletTransaction $transaction): bool
+    {
+        $haystack = $this->transactionSearchableText($transaction);
+
+        return $this->matchesAny($haystack, [
+            'postpay',
+            'postpayee',
+            'postpaye',
+            'creance',
+            'paiement facture',
+            'facture edg',
+            'compteur postpaid',
+        ]);
+    }
+
+    private function looksLikeBillTransaction(WalletTransaction $transaction): bool
+    {
+        $haystack = $this->transactionSearchableText($transaction);
+
+        return $this->matchesAny($haystack, ['edg', 'facture', 'courant', 'compteur', 'prepay', 'postpay']);
+    }
+
+    private function transactionSearchableText(WalletTransaction $transaction): string
+    {
+        $metadata = $transaction->metadata;
+        $metadataString = is_array($metadata) ? json_encode($metadata) : '';
+
+        return $this->normalize(trim(sprintf(
+            '%s %s %s',
+            (string) $transaction->type,
+            (string) ($transaction->description ?? ''),
+            (string) $metadataString,
+        )));
+    }
+
+    private function timeBasedGreeting(): string
+    {
+        $hour = (int) now()->format('H');
+
+        return match (true) {
+            $hour < 12 => 'Bonjour',
+            $hour < 18 => 'Bon après-midi',
+            default => 'Bonsoir',
+        };
     }
 
     private function shouldAllowOtpFallback(): bool

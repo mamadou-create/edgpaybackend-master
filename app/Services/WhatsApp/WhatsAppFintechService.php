@@ -9,6 +9,9 @@ use App\Models\User;
 use App\Models\Wallet;
 use App\Models\WalletTransaction;
 use App\Models\WhatsAppMessageLog;
+use App\Models\UserAssistantMemory;
+use App\Services\AssistantMemoryService;
+use App\Services\NimbaAiAssistantService;
 use App\Services\NimbaSmsService;
 use App\Services\WalletService;
 use Illuminate\Support\Arr;
@@ -27,6 +30,8 @@ class WhatsAppFintechService
         private WhatsAppIntentParser $intentParser,
         private WalletService $walletService,
         private NimbaSmsService $smsService,
+        private AssistantMemoryService $assistantMemoryService,
+        private NimbaAiAssistantService $aiAssistantService,
     ) {}
 
     public function handleWebhook(array $payload): array
@@ -489,6 +494,10 @@ class WhatsAppFintechService
 
         if ($session->state === 'awaiting_receiver') {
             $receiverPhone = $parsed['entities']['phone'] ?? null;
+            if (!$receiverPhone && !empty($parsed['entities']['recipient_name'])) {
+                $receiver = $this->findUserByDisplayName((string) $parsed['entities']['recipient_name'], $user->id);
+                $receiverPhone = $receiver?->phone;
+            }
             if (!$receiverPhone) {
                 return $this->response('Envoyez un numéro destinataire valide.', 'SEND_MONEY');
             }
@@ -532,19 +541,49 @@ class WhatsAppFintechService
             );
         }
 
-        return match ($parsed['intent']) {
-            'LINK_ACCOUNT' => $this->startKnownUserLinkAccountFlow($session, $user),
-            'CHECK_BALANCE' => $this->response(
-                "Votre compte est reconnu. Pour l'API directe, utilisez l'endpoint de solde avec votre PIN.",
+        if ($session->state === 'awaiting_balance_pin') {
+            $result = $this->getWalletBalance($user->whatsapp_phone ?? $user->phone, trim($message));
+            $this->conversationState->updateState($session, 'idle', [], $message);
+
+            return $this->response(
+                "Votre solde disponible est de {$result['balance']} {$result['currency']}." . $this->buildMemorySuffix($user),
                 'CHECK_BALANCE'
-            ),
-            'SEND_MONEY' => $this->startTransferFlow($session, $parsed['entities']),
-            'TRANSACTION_HISTORY' => $this->response(
-                'Pour récupérer l’historique complet côté API, appelez /api/v1/whatsapp/transactions/history avec phone et pin.',
+            );
+        }
+
+        if ($session->state === 'awaiting_history_pin') {
+            $result = $this->getTransactionHistory($user->whatsapp_phone ?? $user->phone, trim($message));
+            $this->conversationState->updateState($session, 'idle', [], $message);
+
+            $lines = collect($result['transactions'])
+                ->take(3)
+                ->map(fn (array $transaction): string => sprintf(
+                    '%s • %s GNF • %s',
+                    $transaction['type'],
+                    number_format(abs((int) $transaction['amount']), 0, ',', ' '),
+                    $transaction['description'] ?? 'Opération'
+                ))
+                ->implode("\n");
+
+            return $this->response(
+                "Voici vos dernières opérations :\n{$lines}",
                 'TRANSACTION_HISTORY'
-            ),
+            );
+        }
+
+        return match ($parsed['intent']) {
+            'GREETING' => $this->welcomeResponse(true, $user),
+            'HELP' => $this->helpResponse($user),
+            'THANKS' => $this->response('Avec plaisir. Je peux continuer avec votre solde, un transfert, votre historique ou le support.', 'THANKS'),
+            'SERVICE_INFO' => $this->response('Sur WhatsApp, NIMBA peut vous guider pour consulter votre solde, lancer un transfert, afficher vos opérations et vous orienter vers le support. Les opérations sensibles restent protégées par PIN et OTP si nécessaire.', 'SERVICE_INFO'),
+            'FEES_INFO' => $this->response('Les frais dépendent du type d\'opération. NIMBA vous guide jusqu\'au bon parcours et les validations utiles restent affichées avant confirmation.', 'FEES_INFO'),
+            'SECURITY_HELP' => $this->response('Gardez votre PIN secret, ne partagez jamais vos OTP et contactez le support si une opération vous semble inhabituelle.', 'SECURITY_HELP'),
+            'LINK_ACCOUNT' => $this->startKnownUserLinkAccountFlow($session, $user),
+            'CHECK_BALANCE' => $this->requestBalancePin($session),
+            'SEND_MONEY' => $this->startTransferFlow($session, $parsed['entities']),
+            'TRANSACTION_HISTORY' => $this->requestHistoryPin($session),
             'SUPPORT' => $this->supportResponse($user->whatsapp_phone ?? $user->phone, $message),
-            default => $this->welcomeResponse(true),
+            default => $this->unknownKnownUserResponse($user, $message),
         };
     }
 
@@ -595,6 +634,10 @@ class WhatsAppFintechService
         $amount = $entities['amount'] ?? null;
         $phone = $entities['phone'] ?? null;
 
+        if (!$phone && !empty($entities['recipient_name'])) {
+            $phone = $this->findUserByDisplayName((string) $entities['recipient_name'])?->phone;
+        }
+
         if ($amount && $phone) {
             $this->conversationState->updateState($session, 'awaiting_transfer_pin', [
                 'amount' => $amount,
@@ -613,15 +656,86 @@ class WhatsAppFintechService
         return $this->response('Quel montant voulez-vous envoyer ?', 'SEND_MONEY');
     }
 
-    private function welcomeResponse(bool $knownUser): array
+    private function welcomeResponse(bool $knownUser, ?User $user = null): array
     {
         $intro = $knownUser
             ? "Bienvenue 👋\nJe suis NIMBA sur WhatsApp."
             : "Bienvenue 👋\nJe suis NIMBA, l'assistant financier WhatsApp.";
 
+        $memorySuffix = $knownUser && $user !== null ? $this->buildMemorySuffix($user) : '';
+        $shortcutSuffix = $knownUser && $user !== null ? $this->buildFrequentBeneficiaryText($user) : '';
+
         return $this->response(
-            $intro . "\n\nChoisissez une option :\n1. Créer un compte\n2. Associer un compte existant\n3. Vérifier solde\n4. Envoyer argent\n5. Historique transactions\n6. Support client",
+            $intro . $memorySuffix . $shortcutSuffix . "\n\nChoisissez une option :\n1. Créer un compte\n2. Associer un compte existant\n3. Vérifier solde\n4. Envoyer argent\n5. Historique transactions\n6. Support client",
             'MENU'
+        );
+    }
+
+    private function helpResponse(User $user): array
+    {
+        return $this->response(
+            'Je peux vous aider à vérifier votre solde, envoyer de l\'argent, consulter vos dernières opérations, expliquer le service, parler sécurité ou transmettre votre demande au support.' . $this->buildMemorySuffix($user),
+            'HELP'
+        );
+    }
+
+    private function requestBalancePin($session): array
+    {
+        $this->conversationState->updateState($session, 'awaiting_balance_pin', []);
+        return $this->response('Saisissez votre PIN pour consulter votre solde.', 'CHECK_BALANCE');
+    }
+
+    private function requestHistoryPin($session): array
+    {
+        $this->conversationState->updateState($session, 'awaiting_history_pin', []);
+        return $this->response('Saisissez votre PIN pour afficher votre historique.', 'TRANSACTION_HISTORY');
+    }
+
+    private function unknownKnownUserResponse(User $user, string $message): array
+    {
+        $aiResponse = $this->buildAiFallbackResponse($user, $message);
+        if ($aiResponse !== null) {
+            return $aiResponse;
+        }
+
+        $this->assistantMemoryService->rememberUnknownMessage($user, $message, 'whatsapp');
+
+        return $this->response(
+            'Je n\'ai pas bien compris. Essayez par exemple : solde, envoyer 20000 à 622000000, historique, quels sont les frais ou comment fonctionne le service ?' . $this->buildMemorySuffix($user),
+            'UNKNOWN'
+        );
+    }
+
+    private function buildAiFallbackResponse(User $user, string $message): ?array
+    {
+        if (!(bool) config('services.nimba_ai.enable_whatsapp_fallback', true)) {
+            return null;
+        }
+
+        $result = $this->aiAssistantService->answer(
+            $user,
+            $message,
+            $this->loadRecentTranscript($user),
+            [
+                'channel' => 'whatsapp',
+                'mode' => 'whatsapp',
+                'memory_summary' => $this->assistantMemoryService->memorySummaries($user, 3),
+            ],
+        );
+
+        if ($result === null) {
+            return null;
+        }
+
+        return $this->response(
+            (string) ($result['reply'] ?? ''),
+            'AI_FALLBACK',
+            [
+                'ai_provider' => $result['provider'] ?? config('services.nimba_ai.provider', 'chatgpt'),
+                'ai_model' => $result['model'] ?? null,
+                'web_references' => $result['web_references'] ?? [],
+                'web_search_provider' => $result['web_search_provider'] ?? null,
+            ],
         );
     }
 
@@ -635,12 +749,13 @@ class WhatsAppFintechService
         );
     }
 
-    private function response(string $reply, string $intent): array
+    private function response(string $reply, string $intent, array $metadata = []): array
     {
         return [
             'success' => true,
             'intent' => $intent,
             'reply' => $reply,
+            'metadata' => $metadata,
         ];
     }
 
@@ -727,6 +842,69 @@ class WhatsAppFintechService
             $amount,
             "Transfert WhatsApp NIMBA vers {$receiver->phone}"
         );
+
+        $this->assistantMemoryService->rememberTransferRecipient($user, $receiver, 'whatsapp', $amount);
+    }
+
+    private function findUserByDisplayName(string $name, ?string $excludeUserId = null): ?User
+    {
+        $query = User::query()->where('display_name', 'like', '%' . trim($name) . '%');
+
+        if ($excludeUserId !== null) {
+            $query->where('id', '!=', $excludeUserId);
+        }
+
+        $matches = $query->limit(2)->get();
+
+        return $matches->count() === 1 ? $matches->first() : null;
+    }
+
+    private function buildMemorySuffix(User $user): string
+    {
+        $topics = $this->assistantMemoryService->preferredTopics($user, 2);
+        if (empty($topics)) {
+            return '';
+        }
+
+        return "\n\nJe retiens aussi vos sujets récents : " . implode(', ', $topics) . '.';
+    }
+
+    private function buildFrequentBeneficiaryText(User $user): string
+    {
+        $beneficiaries = $this->assistantMemoryService->frequentBeneficiaries($user, 2);
+        if (empty($beneficiaries)) {
+            return '';
+        }
+
+        $lines = collect($beneficiaries)
+            ->map(fn (array $beneficiary): string => '- Envoyer à ' . $beneficiary['display_name'] . ' (' . $beneficiary['phone'] . ')')
+            ->implode("\n");
+
+        return "\n\nRaccourcis intelligents :\n{$lines}";
+    }
+
+    private function loadRecentTranscript(User $user, int $limit = 6): array
+    {
+        $phone = $user->whatsapp_phone ?? $user->phone;
+
+        return WhatsAppMessageLog::query()
+            ->where(function ($query) use ($user, $phone): void {
+                $query->where('user_id', $user->id);
+
+                if ($phone) {
+                    $query->orWhere('user_phone', $phone);
+                }
+            })
+            ->latest('created_at')
+            ->limit(max(1, $limit))
+            ->get(['direction', 'message'])
+            ->reverse()
+            ->map(fn (WhatsAppMessageLog $log): array => [
+                'role' => $log->direction === 'inbound' ? 'user' : 'assistant',
+                'content' => (string) $log->message,
+            ])
+            ->values()
+            ->all();
     }
 
     private function linkOtpCacheKey(string $whatsappPhone): string

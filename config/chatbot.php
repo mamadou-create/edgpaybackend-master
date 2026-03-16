@@ -3,7 +3,57 @@
 return [
     'allow_otp_fallback' => (bool) env('CHATBOT_ALLOW_OTP_FALLBACK', false),
 
+    'conversational_agents' => [
+        'nimba' => [
+            'label' => 'NIMBA Classique',
+            'description' => 'Assistant polyvalent pour les questions générales et les opérations courantes.',
+            'system_prompt' => 'Style d agent: assistant polyvalent, clair, direct et rassurant.',
+            'provider' => '',
+            'model' => '',
+        ],
+        'coach' => [
+            'label' => 'NIMBA Coach',
+            'description' => 'Explique étape par étape et aide les utilisateurs à comprendre les parcours.',
+            'system_prompt' => 'Style d agent: pédagogue, structuré, explique les étapes une par une avec un ton simple.',
+            'provider' => '',
+            'model' => '',
+        ],
+        'expert' => [
+            'label' => 'NIMBA Expert Paiement',
+            'description' => 'Plus précis sur les flux portefeuille, EDG, sécurité et détails opérationnels.',
+            'system_prompt' => 'Style d agent: expert fintech EdgPay, précis, orienté sécurité, portefeuille, paiements et détails métier.',
+            'provider' => '',
+            'model' => '',
+        ],
+        'gpt' => [
+            'label' => 'GPT Assistant',
+            'description' => 'Agent branché sur le provider OpenAI pour les réponses générales et approfondies.',
+            'system_prompt' => 'Style d agent: très clair, structuré, utile, avec un bon niveau de synthèse.',
+            'provider' => 'chatgpt',
+            'model' => 'gpt-4.1-mini',
+        ],
+        'gemini' => [
+            'label' => 'Gemini Assistant',
+            'description' => 'Agent branché sur Google Gemini pour les réponses générales et multimodales futures.',
+            'system_prompt' => 'Style d agent: analytique, clair, orienté explication concise.',
+            'provider' => 'gemini',
+            'model' => 'gemini-2.0-flash',
+        ],
+        'claude' => [
+            'label' => 'Claude Assistant',
+            'description' => 'Agent branché sur Anthropic Claude pour les réponses structurées et nuancées.',
+            'system_prompt' => 'Style d agent: posé, rigoureux, nuancé, structuré et très lisible.',
+            'provider' => 'claude',
+            'model' => 'claude-3-5-sonnet-20241022',
+        ],
+    ],
+
     'intent_keywords' => [
+        'greeting' => ['bonjour', 'salut', 'bonsoir', 'hello', 'coucou', 'hey'],
+        'help' => ['aide', 'menu', 'que peux tu faire', 'que fais tu', 'besoin d aide', 'assistance'],
+        'thanks' => ['merci', 'thanks', 'thank you', 'super merci'],
+        'service_info' => ['comment fonctionne votre service', 'comment ca marche', 'comment fonctionne edgpay', 'comment marche nimba', 'c est quoi edgpay'],
+        'fees_info' => ['frais', 'tarifs', 'tarification', 'combien coute', 'commission transfert', 'frais transfert'],
         'check_balance' => ['solde', 'balance', 'combien j ai', 'quel est mon solde'],
         'send_money' => ['envoie', 'envoyer', 'transfert', 'transferer'],
         'transaction_history' => ['historique', 'transactions', 'mes transactions', 'mes operations'],
@@ -40,5 +90,65 @@ return [
         'account_info' => ['mon compte', 'information sur mon compte', 'infos compte', 'profil'],
         'support_help' => ['support', 'agent', 'conseiller', 'aide humaine'],
         'security_help' => ['securite', 'otp', 'pin', 'fraude', 'code'],
+    ],
+
+    'app_knowledge' => [
+        'account_creation' => [
+            'patterns' => ['comment creer un compte', 'comment ouvrir un compte', 'inscription edgpay', 'creer mon compte', 'ouvrir mon compte'],
+            'reply' => 'Pour utiliser EdgPay, vous devez d\'abord disposer d\'un compte utilisateur dans l\'application. Une fois connecté, vous pouvez consulter votre solde, envoyer de l\'argent, suivre vos transactions, gérer des dépôts ou retraits et accéder au paiement EDG selon votre profil.',
+            'buttons' => ['Informations sur mon compte', 'Aide'],
+            'knowledge_topic' => 'account',
+        ],
+        'transfer_howto' => [
+            'patterns' => ['comment envoyer de l argent', 'comment faire un transfert', 'comment transferer', 'comment envoyer argent', 'comment faire un envoi'],
+            'reply' => 'Dans EdgPay, vous pouvez lancer un transfert depuis NIMBA en donnant le montant puis le destinataire. Exemple : Envoyer 25000 à 622000000. Avant l\'exécution, je vous demande toujours une confirmation puis un OTP pour sécuriser l\'opération.',
+            'buttons' => ['Envoyer de l\'argent', 'Historique des transactions'],
+            'knowledge_topic' => 'transfer',
+        ],
+        'deposit_howto' => [
+            'patterns' => ['comment faire un depot', 'comment deposer', 'comment recharger mon compte', 'comment alimenter mon portefeuille'],
+            'reply' => 'Le dépôt se prépare depuis NIMBA ou le parcours de recharge de l\'application. Je peux préremplir le montant, puis l\'application ouvre le parcours sécurisé de dépôt pour finaliser l\'opération.',
+            'buttons' => ['Dépôt', 'Vérifier mon solde'],
+            'knowledge_topic' => 'deposit',
+        ],
+        'withdraw_howto' => [
+            'patterns' => ['comment faire un retrait', 'comment retirer', 'comment demander un retrait', 'retirer de l argent'],
+            'reply' => 'Pour un retrait, je collecte le montant, je vous demande une confirmation puis un OTP. Si le solde disponible est suffisant, la demande de retrait est créée et transmise pour traitement.',
+            'buttons' => ['Retrait', 'Vérifier mon solde'],
+            'knowledge_topic' => 'withdraw',
+        ],
+        'prepaid_bill_help' => [
+            'patterns' => ['comment payer une facture prepayee', 'comment acheter du courant', 'comment recharger mon compteur', 'prepayee comment ca marche'],
+            'reply' => 'Le paiement EDG prépayé sert à acheter de l\'énergie pour un compteur prépayé. Dans l\'application, le parcours prépayé vous guide pour identifier le compteur, choisir le montant puis finaliser l\'achat.',
+            'buttons' => ['Facture prepayee', 'Support client'],
+            'knowledge_topic' => 'prepaid_bill',
+            'action' => 'open_prepaid_bill_flow',
+        ],
+        'postpaid_bill_help' => [
+            'patterns' => ['comment payer une facture postpayee', 'comment regler une facture edg', 'comment payer ma facture edg', 'postpayee comment ca marche'],
+            'reply' => 'Le parcours EDG postpayé sert à régler une facture liée à une créance ou à un montant restant dû. L\'application vous affiche la facture trouvée, le restant à payer et vous laisse poursuivre le règlement depuis le parcours postpayé.',
+            'buttons' => ['Facture postpayee', 'Support client'],
+            'knowledge_topic' => 'postpaid_bill',
+            'action' => 'open_postpaid_bill_flow',
+        ],
+        'postpaid_minimum' => [
+            'patterns' => ['minimum facture postpayee', 'minimum facture postpaye', 'combien au minimum pour payer une facture postpayee', 'minimum pour payer facture edg', 'montant minimum facture postpayee'],
+            'reply' => 'Pour une facture EDG postpayée, il n\'y a pas un minimum universel propre à EdgPay. Le paiement dépend du montant restant de la créance affichée dans le parcours postpayé. S\'il ne reste rien à payer, aucun règlement n\'est nécessaire.',
+            'buttons' => ['Facture postpayee', 'Support client'],
+            'knowledge_topic' => 'postpaid_bill',
+            'action' => 'open_postpaid_bill_flow',
+        ],
+        'history_help' => [
+            'patterns' => ['comment voir mon historique', 'ou voir mes transactions', 'comment consulter mes operations', 'historique dans l application'],
+            'reply' => 'Je peux afficher directement vos dernières transactions dans la conversation. Vous pouvez aussi ouvrir l\'historique depuis l\'application pour consulter vos opérations récentes.',
+            'buttons' => ['Historique des transactions', 'Vérifier mon solde'],
+            'knowledge_topic' => 'history',
+        ],
+        'security_help' => [
+            'patterns' => ['comment securiser mon compte', 'comment fonctionne otp', 'a quoi sert otp', 'que faire si je soupconne une fraude'],
+            'reply' => 'EdgPay sécurise les opérations sensibles avec OTP et bonnes pratiques de vérification. Ne partagez jamais vos codes, vérifiez le numéro du destinataire avant confirmation et contactez le support si vous voyez une activité inhabituelle.',
+            'buttons' => ['Sécurité du compte', 'Support client'],
+            'knowledge_topic' => 'security',
+        ],
     ],
 ];

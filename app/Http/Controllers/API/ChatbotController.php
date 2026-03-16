@@ -16,11 +16,13 @@ class ChatbotController extends Controller
     {
         $validated = $request->validate([
             'message' => 'required|string|max:1000',
+            'selected_agent' => 'nullable|string|max:50',
         ]);
 
         $response = $this->chatbotService->handle(
             $request->user(),
-            (string) $validated['message']
+            (string) $validated['message'],
+            $validated['selected_agent'] ?? null,
         );
 
         return ApiResponseClass::sendResponse($response, 'Réponse du chatbot générée avec succès');

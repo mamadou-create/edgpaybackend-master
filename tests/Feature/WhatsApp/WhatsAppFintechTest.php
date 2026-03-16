@@ -5,9 +5,12 @@ namespace Tests\Feature\WhatsApp;
 use App\Models\Role;
 use App\Models\SupportRequest;
 use App\Models\User;
+use App\Models\UserAssistantMemory;
 use App\Models\Wallet;
+use App\Models\WalletTransaction;
 use App\Models\WhatsAppChatSession;
 use App\Jobs\SendWhatsAppTextMessageJob;
+use App\Services\NimbaAiAssistantService;
 use App\Services\NimbaSmsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -304,6 +307,191 @@ class WhatsAppFintechTest extends TestCase
             'reason' => 'manual_test',
             'status' => 'open',
         ]);
+    }
+
+    #[Test]
+    public function whatsapp_known_user_can_request_balance_with_pin_conversationally(): void
+    {
+        $user = $this->createExistingClient('622777771', 'Balance User', whatsappPhone: '622777771', balance: 42000);
+
+        $first = $this->postJson('/api/v1/webhook/whatsapp', [
+            'phone' => $user->whatsapp_phone,
+            'message' => 'solde',
+            'timestamp' => now()->toIso8601String(),
+        ]);
+
+        $first
+            ->assertOk()
+            ->assertJsonPath('data.intent', 'CHECK_BALANCE')
+            ->assertJsonPath('data.reply', 'Saisissez votre PIN pour consulter votre solde.');
+
+        $second = $this->postJson('/api/v1/webhook/whatsapp', [
+            'phone' => $user->whatsapp_phone,
+            'message' => '1234',
+            'timestamp' => now()->toIso8601String(),
+        ]);
+
+        $second
+            ->assertOk()
+            ->assertJsonPath('data.intent', 'CHECK_BALANCE');
+
+        $this->assertStringContainsString('42000GNF', str_replace(' ', '', $second->json('data.reply')));
+    }
+
+    #[Test]
+    public function whatsapp_ai_fallback_exposes_web_references_when_current_events_search_is_used(): void
+    {
+        $user = $this->createExistingClient('622777779', 'News User', whatsappPhone: '622777779');
+
+        config([
+            'services.nimba_ai.enabled' => true,
+            'services.nimba_ai.provider' => 'chatgpt',
+            'services.nimba_ai.api_key' => 'openai-test-key',
+            'services.nimba_ai.enable_whatsapp_fallback' => true,
+            'services.nimba_ai.web_search.enabled' => true,
+            'services.nimba_ai.web_search.provider' => 'serper',
+            'services.nimba_ai.web_search.base_url' => 'https://google.serper.dev/search',
+            'services.nimba_ai.web_search.api_key' => 'serper-test-key',
+        ]);
+
+        \Illuminate\Support\Facades\Http::fake([
+            'https://google.serper.dev/*' => \Illuminate\Support\Facades\Http::response([
+                'organic' => [[
+                    'title' => 'Iran latest',
+                    'link' => 'https://news.example.com/iran-latest',
+                    'snippet' => 'Une synthese recente est disponible.',
+                    'source' => 'News Example',
+                    'date' => '2026-03-15',
+                ]],
+            ], 200),
+            'https://api.openai.com/*' => \Illuminate\Support\Facades\Http::response([
+                'model' => 'fake-gpt',
+                'choices' => [[
+                    'finish_reason' => 'stop',
+                    'message' => [
+                        'content' => 'Selon des sources web recentes, la situation reste evolutive.',
+                    ],
+                ]],
+            ], 200),
+        ]);
+
+        $response = $this->postJson('/api/v1/webhook/whatsapp', [
+            'phone' => $user->whatsapp_phone,
+            'message' => 'Quelle est la situation en Iran actuellement ?',
+            'timestamp' => now()->toIso8601String(),
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('data.intent', 'AI_FALLBACK')
+            ->assertJsonPath('data.metadata.ai_provider', 'chatgpt')
+            ->assertJsonPath('data.metadata.web_search_provider', 'serper')
+            ->assertJsonPath('data.metadata.web_references.0.source', 'News Example');
+    }
+
+    #[Test]
+    public function whatsapp_transfer_creates_long_term_beneficiary_memory(): void
+    {
+        $sender = $this->createExistingClient('622777772', 'Sender Memory', pin: '1234', whatsappPhone: '622777772', balance: 200000);
+        $receiver = $this->createExistingClient('622777773', 'Receiver Memory', pin: '4321', whatsappPhone: '622777773', balance: 5000);
+
+        $this->postJson('/api/v1/whatsapp/wallet/send', [
+            'phone' => $sender->whatsapp_phone,
+            'receiver_phone' => $receiver->phone,
+            'amount' => 10000,
+            'pin' => '1234',
+        ])->assertOk();
+
+        $this->assertDatabaseHas('user_assistant_memories', [
+            'user_id' => $sender->id,
+            'category' => 'frequent_beneficiary',
+            'memory_key' => $receiver->id,
+        ]);
+    }
+
+    #[Test]
+    public function whatsapp_welcome_response_includes_frequent_beneficiary_shortcuts(): void
+    {
+        $user = $this->createExistingClient('622777774', 'Shortcut User', whatsappPhone: '622777774', balance: 150000);
+        $receiver = $this->createExistingClient('622777775', 'Mamadou', whatsappPhone: '622777775', balance: 1000);
+
+        UserAssistantMemory::query()->create([
+            'user_id' => $user->id,
+            'category' => 'frequent_beneficiary',
+            'memory_key' => $receiver->id,
+            'summary' => 'Destinataire fréquent : Mamadou',
+            'payload' => [
+                'recipient_id' => $receiver->id,
+                'display_name' => 'Mamadou',
+                'phone' => $receiver->phone,
+            ],
+            'usage_count' => 3,
+            'last_used_at' => now(),
+        ]);
+
+        $response = $this->postJson('/api/v1/webhook/whatsapp', [
+            'phone' => $user->whatsapp_phone,
+            'message' => 'bonjour',
+            'timestamp' => now()->toIso8601String(),
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('data.intent', 'MENU');
+
+        $this->assertStringContainsString('Envoyer à Mamadou', $response->json('data.reply'));
+    }
+
+    #[Test]
+    public function whatsapp_unknown_message_is_recorded_in_long_term_memory(): void
+    {
+        $user = $this->createExistingClient('622777776', 'Unknown User', whatsappPhone: '622777776');
+
+        $this->postJson('/api/v1/webhook/whatsapp', [
+            'phone' => $user->whatsapp_phone,
+            'message' => 'satellite crypto bizarre',
+            'timestamp' => now()->toIso8601String(),
+        ])->assertOk();
+
+        $this->assertDatabaseHas('user_assistant_memories', [
+            'user_id' => $user->id,
+            'category' => 'unknown_request',
+        ]);
+    }
+
+    #[Test]
+    public function whatsapp_unknown_general_question_uses_chatgpt_provider_when_configured(): void
+    {
+        $user = $this->createExistingClient('622777777', 'AI User', whatsappPhone: '622777777');
+
+        config([
+            'services.nimba_ai.enabled' => true,
+            'services.nimba_ai.api_key' => 'test-key',
+            'services.nimba_ai.provider' => 'chatgpt',
+            'services.nimba_ai.enable_whatsapp_fallback' => true,
+        ]);
+
+        $this->mock(NimbaAiAssistantService::class, function ($mock): void {
+            $mock->shouldReceive('answer')
+                ->once()
+                ->andReturn([
+                    'reply' => 'Accra est la capitale du Ghana.',
+                    'provider' => 'chatgpt',
+                    'model' => 'fake-gpt',
+                    'finish_reason' => 'stop',
+                ]);
+        });
+
+        $response = $this->postJson('/api/v1/webhook/whatsapp', [
+            'phone' => $user->whatsapp_phone,
+            'message' => 'Quelle est la capitale du Ghana ?',
+            'timestamp' => now()->toIso8601String(),
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('data.intent', 'AI_FALLBACK')
+            ->assertJsonPath('data.reply', 'Accra est la capitale du Ghana.');
     }
 
     private function createClientRole(): Role

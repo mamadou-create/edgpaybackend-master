@@ -32,6 +32,7 @@ class UserResource extends JsonResource
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
             'assigned_user' => $this->assigned_user,
+            'default_conversational_agent' => $this->default_conversational_agent,
             'user_asseigned' => new UserResource($this->whenLoaded('user_assigned')),
              // 🧩 Rôle complet
              'role_name' => optional($this->role)->slug,

@@ -84,7 +84,73 @@ class SystemSettingRepository implements SystemSettingRepositoryInterface
                 'description' => 'Mots-clés chatbot pour ouvrir le paiement facture postpayée (séparés par des virgules)',
                 'order' => 41,
             ],
+            'nimba_ai_rag_enabled' => [
+                'type' => 'boolean',
+                'group' => 'chatbot',
+                'description' => 'Active le mode RAG de NIMBA pour enrichir les prompts avec la base de connaissances administrable',
+                'order' => 42,
+            ],
+            'nimba_ai_rag_max_snippets' => [
+                'type' => 'integer',
+                'group' => 'chatbot',
+                'description' => 'Nombre maximum d extraits de connaissance injectés dans le prompt IA NIMBA',
+                'order' => 43,
+            ],
+            'nimba_ai_rag_min_score' => [
+                'type' => 'float',
+                'group' => 'chatbot',
+                'description' => 'Score minimal de pertinence pour retenir un extrait dans le mode RAG NIMBA',
+                'order' => 44,
+            ],
+            'chatbot_conversational_agents' => [
+                'type' => 'json',
+                'group' => 'chatbot',
+                'description' => 'Catalogue JSON des agents conversationnels NIMBA administrables par le back-office',
+                'order' => 47,
+            ],
+            'chatbot_default_conversational_agent' => [
+                'type' => 'string',
+                'group' => 'chatbot',
+                'description' => 'Clé de l agent conversationnel NIMBA utilisé par défaut lorsqu aucun agent utilisateur n est défini',
+                'order' => 48,
+            ],
+            'chatbot_primary_ai_provider' => [
+                'type' => 'string',
+                'group' => 'chatbot',
+                'description' => 'Provider IA principal NIMBA utilisé quand aucun agent spécifique n impose son propre provider',
+                'order' => 51,
+            ],
+            'chatbot_web_search_enabled' => [
+                'type' => 'boolean',
+                'group' => 'chatbot',
+                'description' => 'Active ou désactive la recherche web récente pour les questions générales d actualité',
+                'order' => 49,
+            ],
+            'chatbot_web_search_provider' => [
+                'type' => 'string',
+                'group' => 'chatbot',
+                'description' => 'Provider de recherche web NIMBA utilisé pour les questions générales d actualité',
+                'order' => 50,
+            ],
         ];
+
+        if (str_starts_with($key, 'chatbot_app_knowledge_')) {
+            return [
+                'type' => 'json',
+                'group' => 'chatbot',
+                'description' => 'Surcharge JSON d une entrée de connaissance chatbot applicative',
+                'order' => 45,
+            ];
+        }
+
+        if (str_starts_with($key, 'chatbot_knowledge_article_')) {
+            return [
+                'type' => 'json',
+                'group' => 'chatbot',
+                'description' => 'Article JSON de la base de connaissances NIMBA pour le mode RAG',
+                'order' => 46,
+            ];
+        }
 
         return $definitions[$key] ?? null;
     }
