@@ -30,10 +30,15 @@ class CheckCreditProfile
         $profil = $user->creditProfile;
 
         if (! $profil) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Profil de crédit non initialisé. Contactez votre gestionnaire de compte.',
-            ], 403);
+            $profil = $user->creditProfile()->firstOrCreate(
+                ['user_id' => $user->id],
+                [
+                    'credit_limite' => 0,
+                    'credit_disponible' => 0,
+                    'score_fiabilite' => 100,
+                    'niveau_risque' => 'faible',
+                ]
+            );
         }
 
         if ($profil->estActuellementBloque()) {
