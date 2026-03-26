@@ -7,6 +7,7 @@ use App\Http\Controllers\API\RiskDashboardController;
 use App\Http\Controllers\API\ApiClientController;
 use App\Http\Controllers\API\AuthController;
 use App\Http\Controllers\API\CommissionController;
+use App\Http\Controllers\API\FinancialReportController;
 use App\Http\Controllers\API\CompteurController;
 use App\Http\Controllers\API\UserController;
 use App\Http\Controllers\API\DemandeProController;
@@ -258,6 +259,10 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
             Route::post('/approve', [TopupRequestController::class, 'approve']);
             Route::post('/reject', [TopupRequestController::class, 'reject']);
         });
+    });
+
+    Route::prefix('reports')->group(function () {
+        Route::get('/financial', [FinancialReportController::class, 'index']);
     });
 
     Route::prefix('compteurs')->group(function () {
