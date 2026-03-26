@@ -27,8 +27,9 @@ interface TopupRequestRepositoryInterface extends CrudInterface
     public function getStatistics(): array;
     public function searchWithFilters(array $filters, int $perPage = 15): Paginator;
     public function searchWithFiltersAndWhere(string $proId, array $filters, int $perPage = 15): \Illuminate\Pagination\LengthAwarePaginator;
+    public function countByUserAndFilters(string $proId, array $filters): int;
     public function idempotencyKeyExists(string $idempotencyKey): bool;
     public function getPendingRequestsForUser(string $proId);
-    public function getRechargesProForSubAdmin(string $subAdminId, int $perPage = 15): \Illuminate\Pagination\Paginator;
+    public function getRechargesProForSubAdmin(string $subAdminId, int $perPage = 15, array $filters = []): \Illuminate\Pagination\Paginator;
     public function getRechargesProStatusForSubAdmin(string $status, string $subAdminId, int $perPage = 15): \Illuminate\Pagination\Paginator;
 }

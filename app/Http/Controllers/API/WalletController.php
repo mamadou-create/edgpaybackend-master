@@ -181,7 +181,12 @@ class WalletController extends Controller
     public function getByUserId($userId)
     {
         try {
-            $wallet = $this->walletRepository->getByUserId($userId);
+            $authorizedUserId = $this->resolveAuthorizedWalletUserId((string) $userId);
+            if ($authorizedUserId instanceof \Illuminate\Http\JsonResponse) {
+                return $authorizedUserId;
+            }
+
+            $wallet = $this->walletRepository->getByUserId($authorizedUserId);
             if (!$wallet) {
                 return ApiResponseClass::notFound('Wallet introuvable');
             }
@@ -785,11 +790,44 @@ class WalletController extends Controller
     public function getUserStats($userId)
     {
         try {
-            $stats = $this->walletRepository->getUserStats($userId);
+            $authorizedUserId = $this->resolveAuthorizedWalletUserId((string) $userId);
+            if ($authorizedUserId instanceof \Illuminate\Http\JsonResponse) {
+                return $authorizedUserId;
+            }
+
+            $stats = $this->walletRepository->getUserStats($authorizedUserId);
             return ApiResponseClass::sendResponse($stats, 'Statistiques du wallet récupérées avec succès');
         } catch (\Exception $e) {
             return ApiResponseClass::throw($e, 'Erreur lors de la récupération des statistiques du wallet');
         }
+    }
+
+    private function resolveAuthorizedWalletUserId(string $requestedUserId): string|\Illuminate\Http\JsonResponse
+    {
+        $authenticatedUser = Auth::guard('api')->user();
+
+        if (!$authenticatedUser instanceof User) {
+            return ApiResponseClass::unauthorized('Utilisateur non authentifié');
+        }
+
+        $roleSlug = $authenticatedUser->role?->slug;
+        $isPrivilegedUser = $authenticatedUser->role?->is_super_admin === true
+            || ($roleSlug !== null && !in_array($roleSlug, [RoleEnum::CLIENT, RoleEnum::PRO, RoleEnum::API_CLIENT], true));
+
+        if ($isPrivilegedUser) {
+            return $requestedUserId;
+        }
+
+        if ((string) $authenticatedUser->id !== $requestedUserId) {
+            Log::warning('Tentative d\'accès à un wallet d\'un autre utilisateur', [
+                'authenticated_user_id' => $authenticatedUser->id,
+                'requested_user_id' => $requestedUserId,
+            ]);
+
+            return ApiResponseClass::forbidden('Vous ne pouvez consulter que votre propre wallet');
+        }
+
+        return (string) $authenticatedUser->id;
     }
 
 

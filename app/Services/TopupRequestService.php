@@ -21,6 +21,9 @@ use Illuminate\Support\Facades\Auth;
 
 class TopupRequestService
 {
+    private const TARGET_WALLET_PRINCIPAL = 'wallet_principal';
+    private const TARGET_AVOIR_CREANCE = 'avoir_creance';
+
     protected $topupRequestRepository;
     protected $walletRepository;
     protected $commissionRepository;
@@ -305,6 +308,26 @@ class TopupRequestService
         $amount = $topupRequest->amount;
         $provider = CommissionEnum::SOUS_ADMIN;
         $description = "Approvisionnement via demande #{$topupRequest->idempotency_key}";
+        $target = $this->resolveBalanceTarget($topupRequest);
+
+        $beneficiary = User::findOrFail($proUserId);
+
+        if ($target === self::TARGET_AVOIR_CREANCE) {
+            if (!in_array($topupRequest->statut_paiement, ['paye', null], true)) {
+                throw new \Exception('Une recharge d\'avoir créance ne peut pas être approuvée en impayé.');
+            }
+
+            $this->processAvoirApproval(
+                $approver,
+                $beneficiary,
+                (int) $amount,
+                $provider,
+                $description,
+                $topupRequest,
+            );
+
+            return;
+        }
 
         if ($approver->isSubAdmin()) {
             // ✅ Cas 1: Sous-admin approuve - Utiliser rechargeProBySubAdmin
@@ -314,6 +337,57 @@ class TopupRequestService
             $this->processAdminApproval($approver->id, $proUserId, $amount, $provider, $description);
         } else {
             throw new \Exception('Rôle non autorisé pour approuver les recharges');
+        }
+    }
+
+    private function resolveBalanceTarget(TopupRequest $topupRequest): string
+    {
+        $target = (string) ($topupRequest->balance_target ?? self::TARGET_WALLET_PRINCIPAL);
+
+        return in_array($target, [self::TARGET_WALLET_PRINCIPAL, self::TARGET_AVOIR_CREANCE], true)
+            ? $target
+            : self::TARGET_WALLET_PRINCIPAL;
+    }
+
+    private function processAvoirApproval(
+        User $approver,
+        User $beneficiary,
+        int $amount,
+        string $provider,
+        string $description,
+        TopupRequest $topupRequest,
+    ): void {
+        if ($amount <= 0) {
+            throw new \Exception('Montant invalide pour la recharge d\'avoir.');
+        }
+
+        if ($approver->isSubAdmin()) {
+            if ($beneficiary->assigned_user && $beneficiary->assigned_user !== $approver->id) {
+                throw new \Exception('Vous ne pouvez créditer l\'avoir que des clients qui vous sont assignés');
+            }
+        } elseif (!$approver->isSuperAdmin() && !$approver->isAdmin()) {
+            throw new \Exception('Rôle non autorisé pour approuver les recharges d\'avoir');
+        }
+
+        $credited = $this->creanceService->creditAvoirCreance(
+            $beneficiary,
+            (float) $amount,
+            'topup_request_avoir:' . (string) $topupRequest->id,
+            [
+                'topup_request_id' => (string) $topupRequest->id,
+                'idempotency_key' => (string) $topupRequest->idempotency_key,
+                'provider' => $provider,
+                'balance_target' => self::TARGET_AVOIR_CREANCE,
+                'approved_by' => (string) $approver->id,
+            ],
+            null,
+            null,
+            $approver,
+            'topup_request_admin_approval'
+        );
+
+        if ($credited <= 0) {
+            throw new \Exception('Impossible de créditer l\'avoir créance du client.');
         }
     }
 

@@ -17,6 +17,7 @@ class CreateTopupRequestRequest extends FormRequest
         return [
             'pro_id' => ['required', 'exists:users,id'],
             'amount' => ['required','integer','min:1000'],
+            'balance_target' => ['nullable', 'in:wallet_principal,avoir_creance'],
             // 'kind' => ['required','in:' . implode(',', HelperStatus::getTopupSource())],
             // 'idempotency_key' => ['string', 'max:255','unique:topup_requests,idempotency_key'],
             'note' => ['nullable','string','max:1000'],
@@ -36,6 +37,7 @@ class CreateTopupRequestRequest extends FormRequest
             'amount.required' => 'Le montant est obligatoire',
             'amount.integer' => 'Le montant doit être un nombre entier',
             'amount.min' => 'Le montant minimum est de 1000',
+            'balance_target.in' => 'La destination du solde est invalide.',
             // 'kind.required' => 'Le type de recharge est obligatoire',
             // 'kind.in' => 'Le type de recharge doit être CASH, EDG ou PARTNER',
             'idempotency_key.required' => 'La clé d\'idempotence est obligatoire',

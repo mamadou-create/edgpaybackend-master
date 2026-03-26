@@ -235,6 +235,7 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
         Route::post('/', [TopupRequestController::class, 'store']);
         Route::get('/user/{userId}', [TopupRequestController::class, 'findByUser']);
         Route::get('/user/where/{userId}', [TopupRequestController::class, 'findByUserWhere']);
+        Route::get('/user/where/{userId}/count', [TopupRequestController::class, 'countByUserWhere']);
         Route::get('/status/{status}', [TopupRequestController::class, 'findByStatus']);
         Route::get('/status/{status}/{proId}', [TopupRequestController::class, 'findByStatusAndPro']);
         Route::get('/statistics', [TopupRequestController::class, 'statistics']);

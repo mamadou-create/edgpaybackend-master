@@ -14,10 +14,12 @@ use App\Classes\ApiResponseClass;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Auth;
 use App\Http\Controllers\Controller;
 use Illuminate\Support\Facades\Validator;
 use App\Http\Resources\WithdrawalRequestResource;
 use App\Interfaces\WithdrawalRequestRepositoryInterface;
+use App\Enums\RoleEnum;
 
 class WithdrawalRequestController extends Controller
 {
@@ -570,11 +572,16 @@ class WithdrawalRequestController extends Controller
         }
 
         try {
+            $authorizedUserId = $this->resolveAuthorizedWithdrawalUserId($userId);
+            if ($authorizedUserId instanceof \Illuminate\Http\JsonResponse) {
+                return $authorizedUserId;
+            }
+
             $period = $request->period ?? 'month';
-            $stats = $this->walletService->getWithdrawalStats($userId, $period);
+            $stats = $this->walletService->getWithdrawalStats($authorizedUserId, $period);
 
             return ApiResponseClass::sendResponse([
-                'user_id' => $userId,
+                'user_id' => $authorizedUserId,
                 'stats' => $stats,
                 'period' => $period,
                 'calculated_at' => now()->toISOString()
@@ -613,6 +620,11 @@ class WithdrawalRequestController extends Controller
         }
 
         try {
+            $authorizedUserId = $this->resolveAuthorizedWithdrawalUserId($userId);
+            if ($authorizedUserId instanceof \Illuminate\Http\JsonResponse) {
+                return $authorizedUserId;
+            }
+
             $perPage = $request->per_page ?? 15;
             
             $filters = [
@@ -624,13 +636,13 @@ class WithdrawalRequestController extends Controller
             ];
 
             // Utiliser la méthode du service pour récupérer l'historique
-            $withdrawalRequests = $this->walletService->getWithdrawalRequests($userId, $filters);
+            $withdrawalRequests = $this->walletService->getWithdrawalRequests($authorizedUserId, $filters);
 
             // Récupérer les statistiques
-            $userStats = $this->walletService->getWithdrawalStats($userId);
+            $userStats = $this->walletService->getWithdrawalStats($authorizedUserId);
 
             return ApiResponseClass::sendResponse([
-                'user_id' => $userId,
+                'user_id' => $authorizedUserId,
                 'withdrawal_requests' => WithdrawalRequestResource::collection($withdrawalRequests),
                 'user_stats' => $userStats,
                 'pagination' => [
@@ -649,6 +661,34 @@ class WithdrawalRequestController extends Controller
                 400
             );
         }
+    }
+
+    private function resolveAuthorizedWithdrawalUserId(string $requestedUserId): string|\Illuminate\Http\JsonResponse
+    {
+        $authenticatedUser = Auth::guard('api')->user();
+
+        if (!$authenticatedUser instanceof User) {
+            return ApiResponseClass::unauthorized('Utilisateur non authentifié');
+        }
+
+        $roleSlug = $authenticatedUser->role?->slug;
+        $isPrivilegedUser = $authenticatedUser->role?->is_super_admin === true
+            || ($roleSlug !== null && !in_array($roleSlug, [RoleEnum::CLIENT, RoleEnum::PRO, RoleEnum::API_CLIENT], true));
+
+        if ($isPrivilegedUser) {
+            return $requestedUserId;
+        }
+
+        if ((string) $authenticatedUser->id !== $requestedUserId) {
+            Log::warning('Tentative d\'accès à des retraits d\'un autre utilisateur', [
+                'authenticated_user_id' => $authenticatedUser->id,
+                'requested_user_id' => $requestedUserId,
+            ]);
+
+            return ApiResponseClass::forbidden('Vous ne pouvez consulter que vos propres retraits');
+        }
+
+        return (string) $authenticatedUser->id;
     }
 
     /**

@@ -18,9 +18,11 @@ class TopupRequestResource extends JsonResource
             'decided_by' => $this->decided_by,
             // 'decider_name' => $this->decider->displayName ?? null,
             'amount' => $this->amount,
+            'balance_target' => $this->balance_target ?? 'wallet_principal',
+            'balance_target_label' => $this->getBalanceTargetLabel(),
             // 'kind' => $this->getKindLabel(),
             // 'kind_label' => $this->getKindLabel(),
-            'status' => $this->getStatusLabel(),
+            'status' => $this->status,
             'status_label' => $this->getStatusLabel(),
             'status_color' => $this->getStatusColor(),
             'idempotency_key' => $this->idempotency_key,
@@ -45,6 +47,14 @@ class TopupRequestResource extends JsonResource
             'GSS' => 'GSS',
             'PARTNER' => 'Partenaire',
             default => $this->kind
+        };
+    }
+
+    private function getBalanceTargetLabel(): string
+    {
+        return match ($this->balance_target ?? 'wallet_principal') {
+            'avoir_creance' => 'Avoir créance',
+            default => 'Wallet principal',
         };
     }
 

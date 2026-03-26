@@ -400,6 +400,9 @@ class TopupRequestRepository implements TopupRequestRepositoryInterface
             if (!empty($filters['pro_id'])) {
                 $query->where('pro_id', $filters['pro_id']);
             }
+            if (!empty($filters['balance_target'])) {
+                $query->where('balance_target', $filters['balance_target']);
+            }
             if (!empty($filters['date_from'])) {
                 $query->where('created_at', '>=', $filters['date_from']);
             }
@@ -431,7 +434,7 @@ class TopupRequestRepository implements TopupRequestRepositoryInterface
                 ->where('pro_id', $proId);
 
             // Filtres exacts
-            $exactFilters = ['status', 'kind', 'pro_id'];
+            $exactFilters = ['status', 'kind', 'pro_id', 'balance_target'];
             foreach ($exactFilters as $field) {
                 if (!empty($filters[$field])) {
                     $query->where($field, $filters[$field]);
@@ -458,6 +461,38 @@ class TopupRequestRepository implements TopupRequestRepositoryInterface
         } catch (\Exception $e) {
             Log::error("Erreur lors de la recherche avec filtres: " . $e->getMessage());
             return new \Illuminate\Pagination\LengthAwarePaginator([], 0, $perPage);
+        }
+    }
+
+    public function countByUserAndFilters(string $proId, array $filters): int
+    {
+        try {
+            $query = TopupRequest::query()->where('pro_id', $proId);
+
+            $exactFilters = ['status', 'kind', 'pro_id', 'balance_target'];
+            foreach ($exactFilters as $field) {
+                if (!empty($filters[$field])) {
+                    $query->where($field, $filters[$field]);
+                }
+            }
+
+            if (!empty($filters['date_from'])) {
+                $query->whereDate('created_at', '>=', $filters['date_from']);
+            }
+            if (!empty($filters['date_to'])) {
+                $query->whereDate('created_at', '<=', $filters['date_to']);
+            }
+            if (!empty($filters['amount_min'])) {
+                $query->where('amount', '>=', $filters['amount_min']);
+            }
+            if (!empty($filters['amount_max'])) {
+                $query->where('amount', '<=', $filters['amount_max']);
+            }
+
+            return (int) $query->count();
+        } catch (\Exception $e) {
+            Log::error("Erreur lors du comptage des demandes avec filtres: " . $e->getMessage());
+            return 0;
         }
     }
 
@@ -498,15 +533,37 @@ class TopupRequestRepository implements TopupRequestRepositoryInterface
     }
     // Récupérer les recharges pour un sous-admin
 
-    public function getRechargesProForSubAdmin(string $subAdminId, int $perPage = 15): \Illuminate\Pagination\Paginator
+    public function getRechargesProForSubAdmin(string $subAdminId, int $perPage = 15, array $filters = []): \Illuminate\Pagination\Paginator
     {
         try {
-            return TopupRequest::with(['pro', 'decider'])
+            $query = TopupRequest::with(['pro', 'decider'])
                 ->whereHas('pro', function ($query) use ($subAdminId) {
                     $query->where('assigned_user', $subAdminId); // filtre sur le sous-admin via la relation Pro -> User
-                })
-                ->latest()
-                ->simplePaginate($perPage);
+                });
+
+            if (!empty($filters['status'])) {
+                $query->where('status', $filters['status']);
+            }
+            if (!empty($filters['kind'])) {
+                $query->where('kind', $filters['kind']);
+            }
+            if (!empty($filters['balance_target'])) {
+                $query->where('balance_target', $filters['balance_target']);
+            }
+            if (!empty($filters['date_from'])) {
+                $query->whereDate('created_at', '>=', $filters['date_from']);
+            }
+            if (!empty($filters['date_to'])) {
+                $query->whereDate('created_at', '<=', $filters['date_to']);
+            }
+            if (!empty($filters['amount_min'])) {
+                $query->where('amount', '>=', $filters['amount_min']);
+            }
+            if (!empty($filters['amount_max'])) {
+                $query->where('amount', '<=', $filters['amount_max']);
+            }
+
+            return $query->latest()->simplePaginate($perPage);
         } catch (\Exception $e) {
             Log::error("Erreur lors de la récupération des recharges pour le sous-admin $subAdminId : " . $e->getMessage());
             return new \Illuminate\Pagination\Paginator(collect(), $perPage);

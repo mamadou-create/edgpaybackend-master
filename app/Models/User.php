@@ -432,6 +432,11 @@ class User extends Authenticatable implements JWTSubject
         return $this->hasMany(CreanceTransaction::class, 'user_id');
     }
 
+    public function creanceAvoirTransactions(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(\App\Models\CreanceAvoirTransaction::class, 'user_id');
+    }
+
     public function ledgerEntries(): \Illuminate\Database\Eloquent\Relations\HasMany
     {
         return $this->hasMany(LedgerEntry::class, 'user_id');

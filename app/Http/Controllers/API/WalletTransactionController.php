@@ -8,6 +8,10 @@ use App\Classes\ApiResponseClass;
 use App\Http\Requests\Wallet\WalletTransactionRequest;
 use App\Http\Resources\WalletTransactionResource;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
+use App\Enums\RoleEnum;
+use App\Models\User;
 
 class WalletTransactionController extends Controller
 {
@@ -118,7 +122,12 @@ class WalletTransactionController extends Controller
     public function findByUser($userId)
     {
         try {
-            $transactions = $this->transactionRepository->findByUser($userId);
+            $authorizedUserId = $this->resolveAuthorizedWalletTransactionUserId((string) $userId);
+            if ($authorizedUserId instanceof \Illuminate\Http\JsonResponse) {
+                return $authorizedUserId;
+            }
+
+            $transactions = $this->transactionRepository->findByUser($authorizedUserId);
             return ApiResponseClass::sendResponse(
                 WalletTransactionResource::collection($transactions),
                 'Transactions de l’utilisateur récupérées avec succès'
@@ -126,6 +135,34 @@ class WalletTransactionController extends Controller
         } catch (\Exception $e) {
             return ApiResponseClass::serverError("Erreur lors de la récupération des transactions de l’utilisateur");
         }
+    }
+
+    private function resolveAuthorizedWalletTransactionUserId(string $requestedUserId): string|\Illuminate\Http\JsonResponse
+    {
+        $authenticatedUser = Auth::guard('api')->user();
+
+        if (!$authenticatedUser instanceof User) {
+            return ApiResponseClass::unauthorized('Utilisateur non authentifié');
+        }
+
+        $roleSlug = $authenticatedUser->role?->slug;
+        $isPrivilegedUser = $authenticatedUser->role?->is_super_admin === true
+            || ($roleSlug !== null && !in_array($roleSlug, [RoleEnum::CLIENT, RoleEnum::PRO, RoleEnum::API_CLIENT], true));
+
+        if ($isPrivilegedUser) {
+            return $requestedUserId;
+        }
+
+        if ((string) $authenticatedUser->id !== $requestedUserId) {
+            Log::warning('Tentative d\'accès aux transactions wallet d\'un autre utilisateur', [
+                'authenticated_user_id' => $authenticatedUser->id,
+                'requested_user_id' => $requestedUserId,
+            ]);
+
+            return ApiResponseClass::forbidden('Vous ne pouvez consulter que vos propres transactions wallet');
+        }
+
+        return (string) $authenticatedUser->id;
     }
 
     /**

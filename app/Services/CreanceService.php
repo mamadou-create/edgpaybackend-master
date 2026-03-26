@@ -4,11 +4,10 @@ namespace App\Services;
 
 use App\Exceptions\BusinessException;
 use App\Models\Creance;
+use App\Models\CreanceAvoirTransaction;
 use App\Models\CreanceTransaction;
 use App\Models\CreditProfile;
 use App\Models\User;
-use App\Models\Wallet;
-use App\Models\WalletTransaction;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -38,75 +37,166 @@ class CreanceService
         return number_format((float) $v, 0, '.', ' ') . ' GNF';
     }
 
+    private function lockOrCreateCreditProfile(User $client): CreditProfile
+    {
+        $profile = CreditProfile::query()
+            ->where('user_id', $client->id)
+            ->lockForUpdate()
+            ->first();
+
+        if ($profile instanceof CreditProfile) {
+            return $profile;
+        }
+
+        $created = CreditProfile::create([
+            'user_id' => $client->id,
+            'credit_limite' => 0,
+            'credit_disponible' => 0,
+            'score_fiabilite' => 50,
+            'niveau_risque' => 'moyen',
+            'est_bloque' => false,
+            'total_encours' => 0,
+            'avoir_creance_disponible' => 0,
+            'avoir_creance_cumule' => 0,
+            'anciennete_mois' => (int) ($client->created_at?->diffInMonths(now()) ?? 0),
+            'score_calcule_at' => null,
+        ]);
+
+        return CreditProfile::query()
+            ->where('id', $created->id)
+            ->lockForUpdate()
+            ->firstOrFail();
+    }
+
     /**
-     * Crée un avoir (crédit) dans le wallet du client pour un excédent de paiement.
-     * Idempotent via la référence (si déjà créée, retourne le montant existant).
+     * Crédite l'avoir créance du client pour un excédent de paiement.
+     * Idempotent via la référence métier.
      */
-    private function creditWalletOverpayment(
+    public function creditAvoirCreance(
         User $client,
-        float $excessAmount,
+        float $amount,
         string $reference,
         array $metadata = [],
-        ?string $description = null,
+        ?Creance $creance = null,
+        ?CreanceTransaction $transaction = null,
+        ?User $author = null,
+        ?string $source = null,
     ): int {
-        $amount = (int) round($excessAmount);
-        if ($amount <= 0) {
+        $amountInt = (int) round($amount);
+        if ($amountInt <= 0) {
             return 0;
         }
 
-        return (int) DB::transaction(function () use ($client, $amount, $reference, $metadata, $description) {
-            // Verrouiller ou créer le wallet
-            $wallet = Wallet::query()->where('user_id', $client->id)->lockForUpdate()->first();
-            if (!($wallet instanceof Wallet)) {
-                $wallet = Wallet::create([
-                    'user_id' => $client->id,
-                    'currency' => 'GNF',
-                    'cash_available' => 0,
-                    'blocked_amount' => 0,
-                    'commission_available' => 0,
-                    'commission_balance' => 0,
-                ]);
-                $wallet = Wallet::query()->where('id', $wallet->id)->lockForUpdate()->firstOrFail();
-            }
+        return (int) DB::transaction(function () use ($client, $amountInt, $reference, $metadata, $creance, $transaction, $author, $source) {
+            $profile = $this->lockOrCreateCreditProfile($client);
 
-            // Idempotence: si la transaction existe déjà, ne pas doubler.
-            $existing = WalletTransaction::query()
-                ->where('wallet_id', $wallet->id)
-                ->where('type', 'credit_note')
+            $existing = CreanceAvoirTransaction::query()
+                ->where('credit_profile_id', $profile->id)
                 ->where('reference', $reference)
                 ->first();
-            if ($existing instanceof WalletTransaction) {
-                return (int) $existing->amount;
+
+            if ($existing instanceof CreanceAvoirTransaction) {
+                return (int) round((float) $existing->montant);
             }
 
-            $wallet->cash_available += $amount;
-            $wallet->save();
+            $soldeAvant = (float) ($profile->avoir_creance_disponible ?? 0);
+            $soldeApres = $soldeAvant + $amountInt;
 
-            // Sync aussi le solde utilisateur (champ utilisé ailleurs).
-            $lockedUser = User::query()->lockForUpdate()->findOrFail($client->id);
-            $lockedUser->solde_portefeuille = (int) ($lockedUser->solde_portefeuille ?? 0) + $amount;
-            $lockedUser->save();
+            $profile->update([
+                'avoir_creance_disponible' => $soldeApres,
+                'avoir_creance_cumule' => (float) ($profile->avoir_creance_cumule ?? 0) + $amountInt,
+            ]);
 
-            WalletTransaction::create([
-                'wallet_id' => $wallet->id,
+            CreanceAvoirTransaction::create([
                 'user_id' => $client->id,
-                'amount' => $amount,
-                'type' => 'credit_note',
+                'credit_profile_id' => $profile->id,
+                'creance_id' => $creance?->id,
+                'creance_transaction_id' => $transaction?->id,
+                'created_by' => $author?->id,
+                'type' => 'credit_excedent',
+                'montant' => $amountInt,
+                'solde_avant' => $soldeAvant,
+                'solde_apres' => $soldeApres,
                 'reference' => $reference,
-                'description' => $description ?? 'Avoir (excédent paiement créance)',
+                'source' => $source ?? 'creance_overpayment',
                 'metadata' => array_merge([
-                    'source' => 'creance_overpayment',
                     'timestamp' => now()->toISOString(),
                 ], $metadata),
             ]);
 
-            return $amount;
+            return $amountInt;
         });
     }
 
     /**
-     * Débite le wallet du client et applique immédiatement le paiement sur une créance.
-     * Le paiement est marqué comme "valide" (pas de validation admin, car source = wallet).
+     * Débite l'avoir créance du client.
+     * Idempotent via la référence métier et plafonné au solde disponible.
+     */
+    public function debitAvoirCreance(
+        User $client,
+        float $amount,
+        string $reference,
+        array $metadata = [],
+        ?Creance $creance = null,
+        ?CreanceTransaction $transaction = null,
+        ?User $author = null,
+        ?string $source = null,
+    ): int {
+        $amountInt = (int) round($amount);
+        if ($amountInt <= 0) {
+            return 0;
+        }
+
+        return (int) DB::transaction(function () use ($client, $amountInt, $reference, $metadata, $creance, $transaction, $author, $source) {
+            $profile = $this->lockOrCreateCreditProfile($client);
+
+            $existing = CreanceAvoirTransaction::query()
+                ->where('credit_profile_id', $profile->id)
+                ->where('reference', $reference)
+                ->first();
+
+            if ($existing instanceof CreanceAvoirTransaction) {
+                return (int) round((float) $existing->montant);
+            }
+
+            $soldeAvant = (float) ($profile->avoir_creance_disponible ?? 0);
+            $montantDebite = min($amountInt, (int) round($soldeAvant));
+
+            if ($montantDebite <= 0) {
+                return 0;
+            }
+
+            $soldeApres = max(0, $soldeAvant - $montantDebite);
+
+            $profile->update([
+                'avoir_creance_disponible' => $soldeApres,
+            ]);
+
+            CreanceAvoirTransaction::create([
+                'user_id' => $client->id,
+                'credit_profile_id' => $profile->id,
+                'creance_id' => $creance?->id,
+                'creance_transaction_id' => $transaction?->id,
+                'created_by' => $author?->id,
+                'type' => 'debit_utilisation',
+                'montant' => $montantDebite,
+                'solde_avant' => $soldeAvant,
+                'solde_apres' => $soldeApres,
+                'reference' => $reference,
+                'source' => $source ?? 'creance_avoir_usage',
+                'metadata' => array_merge([
+                    'requested_amount' => $amountInt,
+                    'timestamp' => now()->toISOString(),
+                ], $metadata),
+            ]);
+
+            return $montantDebite;
+        });
+    }
+
+    /**
+     * Alias historique: applique immédiatement un paiement de créance en débitant
+     * l'avoir créance dédié, sans toucher au wallet principal.
      * Idempotent via la référence (si déjà appliqué, retourne le montant débité précédemment).
      *
      * @return array{wallet_debite:int, creance_id:string, transaction_id:string}
@@ -124,29 +214,18 @@ class CreanceService
         }
 
         return DB::transaction(function () use ($client, $creance, $amountInt, $reference, $metadata) {
-            $wallet = Wallet::query()->where('user_id', $client->id)->lockForUpdate()->first();
-            if (!($wallet instanceof Wallet)) {
-                $wallet = Wallet::create([
-                    'user_id' => $client->id,
-                    'currency' => 'GNF',
-                    'cash_available' => 0,
-                    'blocked_amount' => 0,
-                    'commission_available' => 0,
-                    'commission_balance' => 0,
-                ]);
-                $wallet = Wallet::query()->where('id', $wallet->id)->lockForUpdate()->firstOrFail();
-            }
+            $profile = $this->lockOrCreateCreditProfile($client);
 
-            $existingWalletTx = WalletTransaction::query()
-                ->where('wallet_id', $wallet->id)
-                ->where('type', 'debit_wallet_creance')
+            $existingAvoirTx = CreanceAvoirTransaction::query()
+                ->where('credit_profile_id', $profile->id)
+                ->where('type', 'debit_utilisation')
                 ->where('reference', $reference)
                 ->first();
 
-            if ($existingWalletTx instanceof WalletTransaction) {
-                $existingTxId = (string) (($existingWalletTx->metadata['creance_transaction_id'] ?? '') ?: '');
+            if ($existingAvoirTx instanceof CreanceAvoirTransaction) {
+                $existingTxId = (string) (($existingAvoirTx->metadata['creance_transaction_id'] ?? '') ?: '');
                 return [
-                    'wallet_debite' => (int) abs((int) $existingWalletTx->amount),
+                    'wallet_debite' => (int) round((float) $existingAvoirTx->montant),
                     'creance_id' => (string) $creance->id,
                     'transaction_id' => $existingTxId,
                 ];
@@ -169,19 +248,12 @@ class CreanceService
 
             $toPay = min($amountInt, $restant);
             if ($toPay <= 0) {
-                throw new \RuntimeException('Montant wallet invalide.');
+                throw new \RuntimeException('Montant avoir invalide.');
             }
 
-            if ((int) $wallet->cash_available < $toPay) {
-                throw new \RuntimeException('Solde portefeuille insuffisant.');
+            if ((int) round((float) ($profile->avoir_creance_disponible ?? 0)) < $toPay) {
+                throw new \RuntimeException('Avoir créance insuffisant.');
             }
-
-            $wallet->cash_available -= $toPay;
-            $wallet->save();
-
-            $lockedUser = User::query()->lockForUpdate()->findOrFail($client->id);
-            $lockedUser->solde_portefeuille = max(0, (int) ($lockedUser->solde_portefeuille ?? 0) - $toPay);
-            $lockedUser->save();
 
             $montantAvant = (float) $lockedCreance->montant_restant;
             $montantApres = max(0.0, $montantAvant - (float) $toPay);
@@ -201,8 +273,8 @@ class CreanceService
                 'preuve_hash' => null,
                 'receipt_number' => $this->genererNumeroRecu(),
                 'receipt_issued_at' => now(),
-                'idempotency_key' => Str::uuid()->toString(),
-                'notes' => 'Paiement via portefeuille (avoir).',
+                'idempotency_key' => $reference,
+                'notes' => 'Paiement via avoir créance.',
                 'ip_soumission' => request()->ip(),
                 'valide_at' => now(),
             ]);
@@ -226,27 +298,30 @@ class CreanceService
                 'date_paiement_effectif' => $nouveauStatut === 'payee' ? now()->toDateString() : null,
             ]);
 
-            $walletTx = WalletTransaction::create([
-                'wallet_id' => $wallet->id,
-                'user_id' => $client->id,
-                'amount' => -$toPay,
-                'type' => 'debit_wallet_creance',
-                'reference' => $reference,
-                'description' => 'Paiement créance via portefeuille',
-                'metadata' => array_merge([
-                    'source' => 'creance_wallet_payment',
-                    'timestamp' => now()->toISOString(),
+            $debited = $this->debitAvoirCreance(
+                $client,
+                (float) $toPay,
+                $reference,
+                array_merge([
                     'creance_id' => (string) $lockedCreance->id,
                     'creance_transaction_id' => (string) $tx->id,
                 ], $metadata),
-            ]);
+                $lockedCreance,
+                $tx,
+                null,
+                'creance_avoir_payment'
+            );
+
+            if ($debited !== $toPay) {
+                throw new \RuntimeException('Avoir créance insuffisant.');
+            }
 
             $this->ledger->crediter(
                 $lockedCreance->client,
                 (float) $toPay,
                 CreanceTransaction::class,
                 $tx->id,
-                "Paiement (wallet) — créance #{$lockedCreance->reference}",
+                "Paiement (avoir créance) — créance #{$lockedCreance->reference}",
                 null
             );
 
@@ -262,14 +337,13 @@ class CreanceService
                 ['statut_apres' => 'valide', 'creance_statut' => $nouveauStatut],
                 [
                     'admin_id' => null,
-                    'source' => 'wallet',
-                    'wallet_transaction_id' => (string) $walletTx->id,
-                    'wallet_reference' => $reference,
+                    'source' => 'avoir_creance',
+                    'avoir_reference' => $reference,
                 ]
             );
 
             return [
-                'wallet_debite' => $toPay,
+                'wallet_debite' => $debited,
                 'creance_id' => (string) $lockedCreance->id,
                 'transaction_id' => (string) $tx->id,
             ];
@@ -277,8 +351,8 @@ class CreanceService
     }
 
     /**
-     * Débite le wallet du client et applique immédiatement le paiement sur ses créances impayées
-     * (répartition automatique FIFO). Idempotent via la référence.
+     * Alias historique: applique immédiatement un paiement global en débitant
+     * l'avoir créance dédié (FIFO), sans toucher au wallet principal.
      *
      * @return array{wallet_debite:int, creances_ciblees:int}
      */
@@ -294,35 +368,24 @@ class CreanceService
         }
 
         return DB::transaction(function () use ($client, $amountInt, $reference, $metadata) {
-            $wallet = Wallet::query()->where('user_id', $client->id)->lockForUpdate()->first();
-            if (!($wallet instanceof Wallet)) {
-                $wallet = Wallet::create([
-                    'user_id' => $client->id,
-                    'currency' => 'GNF',
-                    'cash_available' => 0,
-                    'blocked_amount' => 0,
-                    'commission_available' => 0,
-                    'commission_balance' => 0,
-                ]);
-                $wallet = Wallet::query()->where('id', $wallet->id)->lockForUpdate()->firstOrFail();
-            }
+            $profile = $this->lockOrCreateCreditProfile($client);
 
-            $existingWalletTx = WalletTransaction::query()
-                ->where('wallet_id', $wallet->id)
-                ->where('type', 'debit_wallet_creance_total')
+            $existingAvoirTx = CreanceAvoirTransaction::query()
+                ->where('credit_profile_id', $profile->id)
+                ->where('type', 'debit_utilisation')
                 ->where('reference', $reference)
                 ->first();
 
-            if ($existingWalletTx instanceof WalletTransaction) {
-                $creancesCiblees = (int) (($existingWalletTx->metadata['creances_ciblees'] ?? 0) ?: 0);
+            if ($existingAvoirTx instanceof CreanceAvoirTransaction) {
+                $creancesCiblees = (int) (($existingAvoirTx->metadata['creances_ciblees'] ?? 0) ?: 0);
                 return [
-                    'wallet_debite' => (int) abs((int) $existingWalletTx->amount),
+                    'wallet_debite' => (int) round((float) $existingAvoirTx->montant),
                     'creances_ciblees' => $creancesCiblees,
                 ];
             }
 
-            if ((int) $wallet->cash_available < $amountInt) {
-                throw new \RuntimeException('Solde portefeuille insuffisant.');
+            if ((int) round((float) ($profile->avoir_creance_disponible ?? 0)) < $amountInt) {
+                throw new \RuntimeException('Avoir créance insuffisant.');
             }
 
             $creances = Creance::query()
@@ -377,7 +440,7 @@ class CreanceService
                     'receipt_number' => $this->genererNumeroRecu(),
                     'receipt_issued_at' => now(),
                     'idempotency_key' => Str::uuid()->toString(),
-                    'notes' => 'Paiement via portefeuille (avoir).',
+                    'notes' => 'Paiement via avoir créance.',
                     'ip_soumission' => request()->ip(),
                     'valide_at' => now(),
                 ]);
@@ -406,7 +469,7 @@ class CreanceService
                     (float) $toPay,
                     CreanceTransaction::class,
                     $tx->id,
-                    "Paiement (wallet) — créance #{$creance->reference}",
+                    "Paiement (avoir créance) — créance #{$creance->reference}",
                     null
                 );
 
@@ -419,32 +482,28 @@ class CreanceService
 
             $debited = $amountInt - $reste;
             if ($debited <= 0) {
-                throw new \RuntimeException('Aucun paiement wallet n\'a pu être appliqué.');
+                throw new \RuntimeException('Aucun paiement via avoir créance n\'a pu être appliqué.');
             }
 
-            $wallet->cash_available -= $debited;
-            $wallet->save();
-
-            $lockedUser = User::query()->lockForUpdate()->findOrFail($client->id);
-            $lockedUser->solde_portefeuille = max(0, (int) ($lockedUser->solde_portefeuille ?? 0) - $debited);
-            $lockedUser->save();
-
-            WalletTransaction::create([
-                'wallet_id' => $wallet->id,
-                'user_id' => $client->id,
-                'amount' => -$debited,
-                'type' => 'debit_wallet_creance_total',
-                'reference' => $reference,
-                'description' => 'Paiement global créances via portefeuille',
-                'metadata' => array_merge([
-                    'source' => 'creance_wallet_payment',
-                    'timestamp' => now()->toISOString(),
+            $debitedApplied = $this->debitAvoirCreance(
+                $client,
+                (float) $debited,
+                $reference,
+                array_merge([
                     'creances_ciblees' => $creancesCiblees,
                 ], $metadata),
-            ]);
+                null,
+                null,
+                null,
+                'creance_avoir_payment'
+            );
+
+            if ($debitedApplied !== $debited) {
+                throw new \RuntimeException('Avoir créance insuffisant.');
+            }
 
             return [
-                'wallet_debite' => $debited,
+                'wallet_debite' => $debitedApplied,
                 'creances_ciblees' => $creancesCiblees,
             ];
         });
@@ -767,17 +826,18 @@ class CreanceService
             $excess = max(0.0, $montantSoumis - $montantValide);
 
             if ($excess > 0.01) {
-                // Idempotent: si déjà crédité (par le client au moment de soumission), ne double pas.
-                $this->creditWalletOverpayment(
+                $this->creditAvoirCreance(
                     $creance->client,
                     $excess,
                     'credit_note_overpay_creance_tx:' . (string) $transactionFraiche->id,
                     [
-                        'source' => 'admin_validation',
                         'creance_id' => (string) $creance->id,
                         'transaction_id' => (string) $transactionFraiche->id,
                     ],
-                    'Avoir (excédent paiement créance — validation admin)'
+                    $creance,
+                    $transactionFraiche,
+                    $admin,
+                    'admin_validation'
                 );
             }
 
@@ -793,7 +853,7 @@ class CreanceService
             if ($excess > 0.01) {
                 $existingNotes = trim((string) ($transactionFraiche->notes ?? ''));
                 $append = sprintf(
-                    'Validation admin: montant soumis %s, montant validé %s, excédent crédité %s.',
+                    'Validation admin: montant soumis %s, montant validé %s, excédent crédité dans l\'avoir créance %s.',
                     $this->fmtGnf($montantSoumis),
                     $this->fmtGnf($montantValide),
                     $this->fmtGnf($excess)

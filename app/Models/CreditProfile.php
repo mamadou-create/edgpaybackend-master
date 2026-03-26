@@ -34,6 +34,8 @@ class CreditProfile extends Model
         'bloque_jusqu_au',
         'motif_blocage',
         'total_encours',
+        'avoir_creance_disponible',
+        'avoir_creance_cumule',
         'nb_creances_total',
         'nb_paiements_en_retard',
         'nb_paiements_rapides',
@@ -50,6 +52,8 @@ class CreditProfile extends Model
             'credit_limite'             => 'decimal:2',
             'credit_disponible'         => 'decimal:2',
             'total_encours'             => 'decimal:2',
+            'avoir_creance_disponible'  => 'decimal:2',
+            'avoir_creance_cumule'      => 'decimal:2',
             'montant_moyen_transaction' => 'decimal:2',
             'volume_mensuel_moyen'      => 'decimal:2',
             'delai_moyen_paiement_jours'=> 'decimal:2',
@@ -70,6 +74,11 @@ class CreditProfile extends Model
     public function scoreHistories(): HasMany
     {
         return $this->hasMany(CreditScoreHistory::class, 'user_id', 'user_id');
+    }
+
+    public function avoirTransactions(): HasMany
+    {
+        return $this->hasMany(\App\Models\CreanceAvoirTransaction::class, 'credit_profile_id');
     }
 
     // ─── Accesseurs utilitaires ───────────────────────────────────────────────

@@ -14,6 +14,7 @@ class TopupRequest extends Model
         'pro_id',
         'decided_by',
         'amount',
+        'balance_target',
         'kind',
         'status',
         'statut_paiement',
@@ -34,6 +35,7 @@ class TopupRequest extends Model
     {
         return [
             'amount' => 'integer',
+            'balance_target' => 'string',
             'date_demande' => 'datetime',
             'date_decision' => 'datetime',
             'cancelled_at' => 'datetime',

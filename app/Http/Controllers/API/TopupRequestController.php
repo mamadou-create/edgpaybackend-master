@@ -14,6 +14,7 @@ use App\Http\Requests\TopupRequest\UpdateTopupRequestRequest;
 use App\Http\Resources\TopupRequestResource;
 use App\Interfaces\TopupRequestRepositoryInterface;
 use App\Enums\RoleEnum;
+use App\Models\Creance;
 use App\Models\User;
 use App\Services\TopupRequestService;
 use App\Services\WalletService;
@@ -91,6 +92,26 @@ class TopupRequestController extends Controller
             //         Response::HTTP_CONFLICT
             //     );
             // }
+
+            $balanceTarget = $request->input('balance_target', 'wallet_principal');
+
+            if ($balanceTarget === 'avoir_creance') {
+                $hasUnpaidCreances = Creance::query()
+                    ->where('user_id', $request->input('pro_id'))
+                    ->where('montant_restant', '>', 0)
+                    ->whereNotIn('statut', ['payee', 'annulee'])
+                    ->exists();
+
+                if ($hasUnpaidCreances) {
+                    DB::rollBack();
+
+                    return ApiResponseClass::sendError(
+                        'Recharge d\'avoir indisponible',
+                        ['message' => 'Vous devez d\'abord solder vos créances impayées avant de demander une recharge d\'avoir.'],
+                        Response::HTTP_UNPROCESSABLE_ENTITY
+                    );
+                }
+            }
 
             $topupRequest = $this->topupRequestRepository->create($request->all());
 
@@ -252,14 +273,19 @@ class TopupRequestController extends Controller
     public function findByUser(Request $request, string $userId): JsonResponse
     {
         try {
+            $authorizedUserId = $this->resolveAuthorizedTopupUserId($userId);
+            if ($authorizedUserId instanceof JsonResponse) {
+                return $authorizedUserId;
+            }
 
             $perPage = $request->get('per_page', 15);
-            $filters = $request->only(['status', 'kind', 'pro_id', 'date_from', 'date_to', 'amount_min', 'amount_max']);
+            $filters = $request->only(['status', 'kind', 'pro_id', 'balance_target', 'date_from', 'date_to', 'amount_min', 'amount_max']);
+            unset($filters['pro_id']);
 
             if (!empty($filters)) {
-                $topupRequests = $this->topupRequestRepository->searchWithFilters($filters, $perPage);
+                $topupRequests = $this->topupRequestRepository->searchWithFiltersAndWhere($authorizedUserId, $filters, $perPage);
             } else {
-                $topupRequests = $this->topupRequestRepository->findByUser($userId);
+                $topupRequests = $this->topupRequestRepository->findByUser($authorizedUserId);
             }
 
 
@@ -279,14 +305,19 @@ class TopupRequestController extends Controller
     public function findByUserWhere(Request $request, string $userId): JsonResponse
     {
         try {
+            $authorizedUserId = $this->resolveAuthorizedTopupUserId($userId);
+            if ($authorizedUserId instanceof JsonResponse) {
+                return $authorizedUserId;
+            }
 
             $perPage = $request->get('per_page', 15);
-            $filters = $request->only(['status', 'kind', 'pro_id', 'date_from', 'date_to', 'amount_min', 'amount_max']);
+            $filters = $request->only(['status', 'kind', 'pro_id', 'balance_target', 'date_from', 'date_to', 'amount_min', 'amount_max']);
+            unset($filters['pro_id']);
 
             if (!empty($filters)) {
-                $topupRequests = $this->topupRequestRepository->searchWithFiltersAndWhere($userId, $filters, $perPage);
+                $topupRequests = $this->topupRequestRepository->searchWithFiltersAndWhere($authorizedUserId, $filters, $perPage);
             } else {
-                $topupRequests = $this->topupRequestRepository->findByUser($userId);
+                $topupRequests = $this->topupRequestRepository->findByUser($authorizedUserId);
             }
 
 
@@ -298,6 +329,72 @@ class TopupRequestController extends Controller
             Log::error("Erreur lors de la récupération des demandes pour l'utilisateur $userId: " . $e->getMessage());
             return ApiResponseClass::serverError('Erreur lors de la récupération des demandes');
         }
+    }
+
+    /**
+     * 🔢 Compte les demandes de recharge d'un utilisateur avec filtres.
+     */
+    public function countByUserWhere(Request $request, string $userId): JsonResponse
+    {
+        try {
+            $authorizedUserId = $this->resolveAuthorizedTopupUserId($userId);
+            if ($authorizedUserId instanceof JsonResponse) {
+                return $authorizedUserId;
+            }
+
+            $filters = $request->only([
+                'status',
+                'kind',
+                'pro_id',
+                'balance_target',
+                'date_from',
+                'date_to',
+                'amount_min',
+                'amount_max',
+            ]);
+            unset($filters['pro_id']);
+
+            $count = $this->topupRequestRepository->countByUserAndFilters($authorizedUserId, $filters);
+
+            return ApiResponseClass::sendResponse(
+                ['count' => $count],
+                'Nombre de demandes récupéré avec succès'
+            );
+        } catch (\Exception $e) {
+            Log::error("Erreur lors du comptage des demandes pour l'utilisateur $userId: " . $e->getMessage());
+            return ApiResponseClass::serverError('Erreur lors du comptage des demandes');
+        }
+    }
+
+    /**
+     * Résout l'utilisateur cible autorisé pour les endpoints topup scoppés par utilisateur.
+     */
+    private function resolveAuthorizedTopupUserId(string $requestedUserId): string|JsonResponse
+    {
+        $authenticatedUser = Auth::guard('api')->user();
+
+        if (!$authenticatedUser instanceof User) {
+            return ApiResponseClass::unauthorized('Utilisateur non authentifié');
+        }
+
+        $roleSlug = $authenticatedUser->role?->slug;
+        $isPrivilegedUser = $authenticatedUser->role?->is_super_admin === true
+            || ($roleSlug !== null && !in_array($roleSlug, [RoleEnum::CLIENT, RoleEnum::PRO, RoleEnum::API_CLIENT], true));
+
+        if ($isPrivilegedUser) {
+            return $requestedUserId;
+        }
+
+        if ((string) $authenticatedUser->id !== (string) $requestedUserId) {
+            Log::warning('Tentative d\'accès à des demandes de recharge d\'un autre utilisateur', [
+                'authenticated_user_id' => $authenticatedUser->id,
+                'requested_user_id' => $requestedUserId,
+            ]);
+
+            return ApiResponseClass::forbidden('Vous ne pouvez consulter que vos propres demandes de recharge');
+        }
+
+        return (string) $authenticatedUser->id;
     }
 
     /**
@@ -326,12 +423,13 @@ class TopupRequestController extends Controller
     {
         try {
             $perPage = $request->get('per_page', 15);
+            $filters = $request->only(['status', 'kind', 'balance_target', 'date_from', 'date_to', 'amount_min', 'amount_max']);
 
             // Récupérer l'utilisateur connecté (sous-admin)
             $subAdminId = Auth::guard()->user()->id;
 
             // Récupérer les recharges filtrées par statut et sous-admin
-            $topupRequests = $this->topupRequestRepository->getRechargesProForSubAdmin($subAdminId, $perPage);
+            $topupRequests = $this->topupRequestRepository->getRechargesProForSubAdmin($subAdminId, $perPage, $filters);
 
             return ApiResponseClass::sendResponse(
                 TopupRequestResource::collection($topupRequests)->response()->getData(true),
