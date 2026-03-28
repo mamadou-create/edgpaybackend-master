@@ -25,6 +25,7 @@ class DatabaseSeeder extends Seeder
             RoleSeeder::class,
             UserSeeder::class,
             SystemSettingSeeder::class,
+            TrocPhonePriceSeeder::class,
            
         ]);
     }

@@ -87,6 +87,7 @@ return [
         ],
         'deposit' => ['depot', 'deposer', 'recharger', 'recharge'],
         'withdraw' => ['retrait', 'retirer', 'withdraw'],
+        'troc_phone' => ['troc', 'echanger telephone', 'echanger mon telephone', 'changer iphone', 'changer mon iphone', 'trade in iphone'],
         'account_info' => ['mon compte', 'information sur mon compte', 'infos compte', 'profil'],
         'support_help' => ['support', 'agent', 'conseiller', 'aide humaine'],
         'security_help' => ['securite', 'otp', 'pin', 'fraude', 'code'],
@@ -143,6 +144,13 @@ return [
             'reply' => 'Je peux afficher directement vos dernières transactions dans la conversation. Vous pouvez aussi ouvrir l\'historique depuis l\'application pour consulter vos opérations récentes.',
             'buttons' => ['Historique des transactions', 'Vérifier mon solde'],
             'knowledge_topic' => 'history',
+        ],
+        'troc_help' => [
+            'patterns' => ['comment fonctionne le troc', 'comment echanger mon telephone', 'comment changer iphone', 'comment marche le troc'],
+            'reply' => 'Le mode Troc NIMBA estime votre smartphone à partir du modèle, du stockage, de la batterie et de l\'état général. Ensuite vous choisissez l\'iPhone cible et je calcule immédiatement la différence à payer ou à récupérer.',
+            'buttons' => ['Échanger mon téléphone', 'Support client'],
+            'knowledge_topic' => 'troc',
+            'action' => 'open_troc_flow',
         ],
         'security_help' => [
             'patterns' => ['comment securiser mon compte', 'comment fonctionne otp', 'a quoi sert otp', 'que faire si je soupconne une fraude'],

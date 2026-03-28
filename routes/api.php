@@ -22,6 +22,8 @@ use App\Http\Controllers\API\SystemSettingController;
 use App\Http\Controllers\API\TopupRequestController;
 use App\Http\Controllers\API\ClientWalletController;
 use App\Http\Controllers\API\ChatbotController;
+use App\Http\Controllers\Troc\TrocController;
+use App\Http\Controllers\Troc\TrocImageController;
 use App\Http\Controllers\API\WhatsAppFintechController;
 use App\Http\Controllers\API\WhatsAppWebhookController;
 use App\Http\Controllers\API\WalletController;
@@ -263,6 +265,12 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
 
     Route::prefix('reports')->group(function () {
         Route::get('/financial', [FinancialReportController::class, 'index']);
+    });
+
+    Route::prefix('troc')->group(function () {
+        Route::post('/evaluate', [TrocController::class, 'evaluate']);
+        Route::post('/trade', [TrocController::class, 'trade']);
+        Route::post('/upload', [TrocImageController::class, 'store']);
     });
 
     Route::prefix('compteurs')->group(function () {

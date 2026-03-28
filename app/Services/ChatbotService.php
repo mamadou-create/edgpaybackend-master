@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\ChatHistory;
 use App\Models\SupportRequest;
 use App\Models\SystemSetting;
+use App\Models\TrocPhonePrice;
 use App\Models\User;
 use App\Models\WalletTransaction;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -138,6 +139,7 @@ class ChatbotService
             'POSTPAID_BILL' => $this->handlePostpaidBill($user),
             'DEPOSIT' => $this->handleDeposit($user, $entities),
             'WITHDRAW' => $this->handleWithdraw($user, $entities),
+            'TROC_PHONE' => $this->handleTrocPhone($user),
             'ACCOUNT_INFO' => $this->handleAccountInfo($user),
             'SUPPORT_HELP' => $this->handleSupport($user, $message, 'user_requested_support'),
             'SECURITY_HELP' => $this->handleSecurityHelp($user),
@@ -240,6 +242,44 @@ class ChatbotService
             intent: 'THANKS',
             buttons: $this->defaultButtons($user),
             metadata: $this->buildPersonalizedMetadata($user),
+        );
+    }
+
+    private function handleTrocPhone(User $user): array
+    {
+        $this->clearState($user);
+
+        $catalog = TrocPhonePrice::query()
+            ->orderBy('base_price')
+            ->get(['model', 'storage', 'base_price'])
+            ->map(fn (TrocPhonePrice $price) => sprintf('%s %s - %s USD', $price->model, $price->storage, number_format((float) $price->base_price, 0, '.', ' ')))
+            ->take(5)
+            ->values()
+            ->toArray();
+
+        return $this->buildResponse(
+            reply: 'Passons en mode Troc. Je vais estimer ton téléphone, analyser la photo si tu en ajoutes une, puis calculer la différence pour l\'iPhone cible. Prépare le modèle, le stockage, la batterie et le détail de l\'écran, du dos, du châssis, de la caméra et de Face ID.',
+            intent: 'TROC_PHONE',
+            buttons: [
+                $this->button('Échanger mon téléphone'),
+                $this->button('iPhone 11'),
+                $this->button('iPhone 12'),
+                $this->button('iPhone 13'),
+                $this->button('Écran rayé'),
+                $this->button('Écran cassé'),
+                $this->button('Face ID OK'),
+            ],
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'action' => 'open_troc_flow',
+                'summary' => ['modèle', 'stockage', 'batterie', 'écran', 'dos', 'châssis', 'caméra', 'Face ID', 'photo'],
+                'tips' => [
+                    'Commencez avec votre modèle actuel, par exemple iPhone 12 128GB.',
+                    'Ajoutez une photo nette de face et de dos pour aider NIMBA à repérer rayures et casses visibles.',
+                    'Renseignez aussi la caméra, le châssis et Face ID pour une estimation plus juste.',
+                ],
+                'catalog_preview' => $catalog,
+                'knowledge_topic' => 'troc',
+            ]),
         );
     }
 
@@ -1213,6 +1253,10 @@ class ChatbotService
             return 'WITHDRAW';
         }
 
+        if ($this->matchesConfiguredIntent($normalized, 'troc_phone')) {
+            return 'TROC_PHONE';
+        }
+
         if ($this->matchesConfiguredIntent($normalized, 'account_info')) {
             return 'ACCOUNT_INFO';
         }
@@ -1514,6 +1558,7 @@ class ChatbotService
                 $this->button('Historique des transactions'),
                 $this->button('Dépôt'),
                 $this->button('Retrait'),
+                $this->button('Échanger mon téléphone'),
                 $this->button('Support client'),
             ],
             $user ? $this->billButtons($user) : [],

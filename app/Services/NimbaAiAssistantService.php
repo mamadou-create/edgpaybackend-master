@@ -165,6 +165,60 @@ class NimbaAiAssistantService
         }
     }
 
+    public function analyzeVision(string $instruction, array $images, array $context = []): ?array
+    {
+        if (!$this->isEnabled()) {
+            return null;
+        }
+
+        $resolvedConfig = $this->resolveProviderConfig($context);
+        $provider = $resolvedConfig['provider'];
+        $baseUrl = $resolvedConfig['base_url'];
+        $apiKey = $resolvedConfig['api_key'];
+        $model = $resolvedConfig['model'];
+
+        if (!$this->supportsProvider($provider) || $baseUrl === '' || $apiKey === '' || $images === []) {
+            return null;
+        }
+
+        try {
+            $response = match ($provider) {
+                'gemini', 'google', 'google-gemini' => $this->sendGeminiVisionRequest($baseUrl, $apiKey, $instruction, $images, $resolvedConfig),
+                'claude', 'anthropic' => $this->sendClaudeVisionRequest($baseUrl, $apiKey, $instruction, $images, $resolvedConfig),
+                default => $this->sendOpenAiCompatibleVisionRequest($baseUrl, $apiKey, $instruction, $images, $resolvedConfig),
+            };
+
+            if (!$response->successful()) {
+                Log::warning('nimba_ai.vision_request_failed', [
+                    'status' => $response->status(),
+                    'body' => $response->json() ?? $response->body(),
+                ]);
+
+                return null;
+            }
+
+            $payload = $response->json();
+            $content = $this->extractAssistantContent($provider, $payload);
+
+            if ($content === '') {
+                return null;
+            }
+
+            return [
+                'reply' => $content,
+                'provider' => $provider,
+                'model' => $this->extractModelName($provider, $payload, $model),
+                'finish_reason' => $this->extractFinishReason($provider, $payload),
+            ];
+        } catch (\Throwable $error) {
+            Log::warning('nimba_ai.vision_exception', [
+                'error' => $error->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
     private function supportsProvider(string $provider): bool
     {
         return in_array($provider, ['chatgpt', 'openai', 'gemini', 'google', 'google-gemini', 'claude', 'anthropic'], true);
@@ -319,6 +373,65 @@ class NimbaAiAssistantService
         ]);
     }
 
+    private function sendOpenAiCompatibleVisionRequest(
+        string $baseUrl,
+        string $apiKey,
+        string $instruction,
+        array $images,
+        array $providerConfig = [],
+    ) {
+        $request = Http::withToken($apiKey)
+            ->acceptJson()
+            ->timeout((int) config('services.nimba_ai.timeout', 20));
+
+        $organization = trim((string) ($providerConfig['organization'] ?? config('services.nimba_ai.organization', '')));
+        if ($organization !== '') {
+            $request = $request->withHeader('OpenAI-Organization', $organization);
+        }
+
+        $project = trim((string) ($providerConfig['project'] ?? config('services.nimba_ai.project', '')));
+        if ($project !== '') {
+            $request = $request->withHeader('OpenAI-Project', $project);
+        }
+
+        $content = [
+            [
+                'type' => 'text',
+                'text' => $instruction,
+            ],
+        ];
+
+        foreach ($images as $image) {
+            $dataUrl = $this->buildDataUrl($image);
+            if ($dataUrl === null) {
+                continue;
+            }
+
+            $content[] = [
+                'type' => 'image_url',
+                'image_url' => [
+                    'url' => $dataUrl,
+                ],
+            ];
+        }
+
+        return $request->post($baseUrl, [
+            'model' => (string) ($providerConfig['model'] ?? config('services.nimba_ai.model', 'gpt-4.1-mini')),
+            'messages' => [
+                [
+                    'role' => 'system',
+                    'content' => 'Tu es NIMBA Vision. Tu observes seulement ce qui est visible sur une photo de smartphone et tu réponds strictement au format demandé.',
+                ],
+                [
+                    'role' => 'user',
+                    'content' => $content,
+                ],
+            ],
+            'temperature' => 0.1,
+            'max_tokens' => (int) config('services.nimba_ai.max_tokens', 300),
+        ]);
+    }
+
     private function sendGeminiRequest(string $baseUrl, string $apiKey, array $messages, array $providerConfig)
     {
         $baseUrl = $this->resolveGeminiEndpoint(
@@ -356,6 +469,59 @@ class NimbaAiAssistantService
                 'contents' => $chatContents,
                 'generationConfig' => [
                     'temperature' => (float) config('services.nimba_ai.temperature', 0.3),
+                    'maxOutputTokens' => (int) config('services.nimba_ai.max_tokens', 300),
+                ],
+            ]);
+    }
+
+    private function sendGeminiVisionRequest(
+        string $baseUrl,
+        string $apiKey,
+        string $instruction,
+        array $images,
+        array $providerConfig,
+    ) {
+        $baseUrl = $this->resolveGeminiEndpoint(
+            $baseUrl,
+            (string) ($providerConfig['model'] ?? 'gemini-2.0-flash')
+        );
+
+        $parts = [
+            ['text' => $instruction],
+        ];
+
+        foreach ($images as $image) {
+            $mimeType = trim((string) ($image['mime_type'] ?? 'image/jpeg'));
+            $base64 = trim((string) ($image['base64'] ?? ''));
+            if ($base64 === '') {
+                continue;
+            }
+
+            $parts[] = [
+                'inlineData' => [
+                    'mimeType' => $mimeType,
+                    'data' => $base64,
+                ],
+            ];
+        }
+
+        return Http::acceptJson()
+            ->withQueryParameters(['key' => $apiKey])
+            ->timeout((int) config('services.nimba_ai.timeout', 20))
+            ->post($baseUrl, [
+                'systemInstruction' => [
+                    'parts' => [
+                        ['text' => 'Tu es NIMBA Vision. Tu observes seulement ce qui est visible sur une photo de smartphone et tu réponds strictement au format demandé.'],
+                    ],
+                ],
+                'contents' => [
+                    [
+                        'role' => 'user',
+                        'parts' => $parts,
+                    ],
+                ],
+                'generationConfig' => [
+                    'temperature' => 0.1,
                     'maxOutputTokens' => (int) config('services.nimba_ai.max_tokens', 300),
                 ],
             ]);
@@ -413,6 +579,69 @@ class NimbaAiAssistantService
                 'system' => $systemPrompt,
                 'messages' => $claudeMessages,
             ]);
+    }
+
+    private function sendClaudeVisionRequest(
+        string $baseUrl,
+        string $apiKey,
+        string $instruction,
+        array $images,
+        array $providerConfig,
+    ) {
+        $content = [
+            [
+                'type' => 'text',
+                'text' => $instruction,
+            ],
+        ];
+
+        foreach ($images as $image) {
+            $mimeType = trim((string) ($image['mime_type'] ?? 'image/jpeg'));
+            $base64 = trim((string) ($image['base64'] ?? ''));
+            if ($base64 === '') {
+                continue;
+            }
+
+            $content[] = [
+                'type' => 'image',
+                'source' => [
+                    'type' => 'base64',
+                    'media_type' => $mimeType,
+                    'data' => $base64,
+                ],
+            ];
+        }
+
+        return Http::acceptJson()
+            ->withHeaders([
+                'x-api-key' => $apiKey,
+                'anthropic-version' => (string) ($providerConfig['version'] ?? '2023-06-01'),
+            ])
+            ->timeout((int) config('services.nimba_ai.timeout', 20))
+            ->post($baseUrl, [
+                'model' => (string) ($providerConfig['model'] ?? 'claude-3-5-sonnet-20241022'),
+                'max_tokens' => (int) config('services.nimba_ai.max_tokens', 300),
+                'temperature' => 0.1,
+                'system' => 'Tu es NIMBA Vision. Tu observes seulement ce qui est visible sur une photo de smartphone et tu réponds strictement au format demandé.',
+                'messages' => [
+                    [
+                        'role' => 'user',
+                        'content' => $content,
+                    ],
+                ],
+            ]);
+    }
+
+    private function buildDataUrl(array $image): ?string
+    {
+        $mimeType = trim((string) ($image['mime_type'] ?? 'image/jpeg'));
+        $base64 = trim((string) ($image['base64'] ?? ''));
+
+        if ($base64 === '') {
+            return null;
+        }
+
+        return 'data:' . $mimeType . ';base64,' . $base64;
     }
 
     private function buildGroundingContext(array $context, array $retrievedKnowledge = [], array $webReferences = []): string
