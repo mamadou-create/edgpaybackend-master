@@ -38,9 +38,9 @@ class TrocController extends Controller
         );
 
         $estimatedPrice = max(0, round((float) $price->base_price - $deductions['total'], 2));
-        $convertedBasePrice = $this->convertUsdToGnf((float) $price->base_price);
-        $convertedEstimatedPrice = $this->convertUsdToGnf($estimatedPrice);
-        $convertedTotalDeduction = $this->convertUsdToGnf($deductions['total']);
+        $convertedBasePrice = $this->convertReferencePriceToGnf((float) $price->base_price);
+        $convertedEstimatedPrice = $this->convertReferencePriceToGnf($estimatedPrice);
+        $convertedTotalDeduction = $this->convertReferencePriceToGnf($deductions['total']);
 
         return ApiResponseClass::sendResponse([
             'model' => $price->model,
@@ -77,7 +77,7 @@ class TrocController extends Controller
             return ApiResponseClass::notFound('Prix cible introuvable pour ce modèle.');
         }
 
-        $targetPriceGnf = $this->convertUsdToGnf((float) $targetPrice->base_price);
+        $targetPriceGnf = $this->convertReferencePriceToGnf((float) $targetPrice->base_price);
         $userPriceGnf = round((float) $validated['user_price'], 0);
         $difference = round($targetPriceGnf - $userPriceGnf, 0);
 
@@ -103,14 +103,14 @@ class TrocController extends Controller
         return array_map(function (array $item): array {
             return [
                 'label' => $item['label'] ?? '',
-                'amount' => $this->convertUsdToGnf((float) ($item['amount'] ?? 0)),
+                'amount' => $this->convertReferencePriceToGnf((float) ($item['amount'] ?? 0)),
             ];
         }, $items);
     }
 
-    private function convertUsdToGnf(float $amount): float
+    private function convertReferencePriceToGnf(float $amount): float
     {
-        $rate = max(1, (int) config('troc.usd_to_gnf_rate', 8700));
+        $rate = max(1, (int) config('troc.reference_to_gnf_rate', 8700));
 
         return round($amount * $rate, 0);
     }
