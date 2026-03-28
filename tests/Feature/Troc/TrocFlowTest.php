@@ -112,11 +112,12 @@ class TrocFlowTest extends TestCase
             ->assertJsonPath('data.condition_details.frame_condition', 'dented')
             ->assertJsonPath('data.condition_details.face_id_works', false)
             ->assertJsonPath('data.condition_details.repaired', true)
-            ->assertJsonPath('data.image_analysis.source', 'vision');
+            ->assertJsonPath('data.image_analysis.source', 'vision')
+            ->assertJsonPath('data.currency', 'GNF');
 
-        $this->assertSame(270.0, (float) $response->json('data.base_price'));
-        $this->assertSame(97.0, (float) $response->json('data.total_deduction'));
-        $this->assertSame(173.0, (float) $response->json('data.estimated_price'));
+        $this->assertSame(2349000.0, (float) $response->json('data.base_price'));
+        $this->assertSame(843900.0, (float) $response->json('data.total_deduction'));
+        $this->assertSame(1505100.0, (float) $response->json('data.estimated_price'));
 
         $deductionLabels = collect($response->json('data.deductions'))->pluck('label')->all();
 
@@ -143,7 +144,7 @@ class TrocFlowTest extends TestCase
         $this->actingAs($this->createClientUser(), 'api');
 
         $response = $this->postJson('/api/v1/troc/trade', [
-            'user_price' => 208,
+            'user_price' => 1725600,
             'target_model' => 'iPhone 15',
             'target_storage' => '128GB',
         ]);
@@ -153,11 +154,12 @@ class TrocFlowTest extends TestCase
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.target_model', 'iPhone 15')
             ->assertJsonPath('data.target_storage', '128GB')
-            ->assertJsonPath('data.message', 'Tu ajoutes 392.00 USD');
+            ->assertJsonPath('data.currency', 'GNF')
+            ->assertJsonPath('data.message', 'Tu ajoutes 3 494 400 GNF');
 
-        $this->assertSame(600.0, (float) $response->json('data.target_price'));
-        $this->assertSame(208.0, (float) $response->json('data.user_price'));
-        $this->assertSame(392.0, (float) $response->json('data.difference'));
+        $this->assertSame(5220000.0, (float) $response->json('data.target_price'));
+        $this->assertSame(1725600.0, (float) $response->json('data.user_price'));
+        $this->assertSame(3494400.0, (float) $response->json('data.difference'));
     }
 
     private function createClientUser(): User

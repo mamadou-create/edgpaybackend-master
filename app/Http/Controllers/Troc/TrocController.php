@@ -38,19 +38,22 @@ class TrocController extends Controller
         );
 
         $estimatedPrice = max(0, round((float) $price->base_price - $deductions['total'], 2));
+        $convertedBasePrice = $this->convertUsdToGnf((float) $price->base_price);
+        $convertedEstimatedPrice = $this->convertUsdToGnf($estimatedPrice);
+        $convertedTotalDeduction = $this->convertUsdToGnf($deductions['total']);
 
         return ApiResponseClass::sendResponse([
             'model' => $price->model,
             'storage' => $price->storage,
-            'base_price' => (float) $price->base_price,
-            'estimated_price' => $estimatedPrice,
+            'base_price' => $convertedBasePrice,
+            'estimated_price' => $convertedEstimatedPrice,
             'battery' => (int) $validated['battery'],
             'condition' => (string) $validated['condition'],
             'condition_details' => $deductions['condition_details'],
             'image_analysis' => $deductions['image_analysis'],
-            'deductions' => $deductions['items'],
-            'total_deduction' => $deductions['total'],
-            'currency' => 'USD',
+            'deductions' => $this->convertDeductionItemsToGnf($deductions['items']),
+            'total_deduction' => $convertedTotalDeduction,
+            'currency' => config('troc.display_currency', 'GNF'),
             'next_questions' => $deductions['next_questions'],
         ], 'Estimation Troc calculée avec succès');
     }
@@ -74,23 +77,47 @@ class TrocController extends Controller
             return ApiResponseClass::notFound('Prix cible introuvable pour ce modèle.');
         }
 
-        $difference = round((float) $targetPrice->base_price - (float) $validated['user_price'], 2);
+        $targetPriceGnf = $this->convertUsdToGnf((float) $targetPrice->base_price);
+        $userPriceGnf = round((float) $validated['user_price'], 0);
+        $difference = round($targetPriceGnf - $userPriceGnf, 0);
 
         $message = $difference > 0
-            ? 'Tu ajoutes ' . number_format($difference, 2, '.', ' ') . ' USD'
+            ? 'Tu ajoutes ' . $this->formatGnf($difference)
             : ($difference < 0
-                ? 'On te donne ' . number_format(abs($difference), 2, '.', ' ') . ' USD'
+                ? 'On te donne ' . $this->formatGnf(abs($difference))
                 : 'Échange équilibré, aucun supplément.');
 
         return ApiResponseClass::sendResponse([
             'target_model' => $targetPrice->model,
             'target_storage' => $targetPrice->storage,
-            'target_price' => (float) $targetPrice->base_price,
-            'user_price' => round((float) $validated['user_price'], 2),
+            'target_price' => $targetPriceGnf,
+            'user_price' => $userPriceGnf,
             'difference' => $difference,
             'message' => $message,
-            'currency' => 'USD',
+            'currency' => config('troc.display_currency', 'GNF'),
         ], 'Simulation de troc calculée avec succès');
+    }
+
+    private function convertDeductionItemsToGnf(array $items): array
+    {
+        return array_map(function (array $item): array {
+            return [
+                'label' => $item['label'] ?? '',
+                'amount' => $this->convertUsdToGnf((float) ($item['amount'] ?? 0)),
+            ];
+        }, $items);
+    }
+
+    private function convertUsdToGnf(float $amount): float
+    {
+        $rate = max(1, (int) config('troc.usd_to_gnf_rate', 8700));
+
+        return round($amount * $rate, 0);
+    }
+
+    private function formatGnf(float $amount): string
+    {
+        return number_format(round($amount, 0), 0, '.', ' ') . ' ' . config('troc.display_currency', 'GNF');
     }
 
     private function computeDeductions(

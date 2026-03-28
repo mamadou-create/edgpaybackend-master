@@ -252,7 +252,7 @@ class ChatbotService
         $catalog = TrocPhonePrice::query()
             ->orderBy('base_price')
             ->get(['model', 'storage', 'base_price'])
-            ->map(fn (TrocPhonePrice $price) => sprintf('%s %s - %s USD', $price->model, $price->storage, number_format((float) $price->base_price, 0, '.', ' ')))
+            ->map(fn (TrocPhonePrice $price) => sprintf('%s %s - %s GNF', $price->model, $price->storage, $this->formatAmount((int) round((float) $price->base_price * max(1, (int) config('troc.usd_to_gnf_rate', 8700))))))
             ->take(5)
             ->values()
             ->toArray();
