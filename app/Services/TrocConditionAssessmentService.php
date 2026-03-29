@@ -11,7 +11,7 @@ class TrocConditionAssessmentService
 
     public function analyzeStoredImage(string $absolutePath, string $publicUrl): array
     {
-        $fallback = $this->fallbackAssessment($publicUrl);
+        $fallback = $this->fallbackAssessment($publicUrl, $absolutePath);
 
         if (!is_file($absolutePath) || !is_readable($absolutePath)) {
             return $fallback;
@@ -56,8 +56,12 @@ PROMPT;
             'mode' => 'troc_vision',
         ]);
 
-        if (!is_array($analysis) || trim((string) ($analysis['reply'] ?? '')) === '') {
+        if (!is_array($analysis)) {
             return $fallback;
+        }
+
+        if (trim((string) ($analysis['reply'] ?? '')) === '') {
+            return $this->fallbackAssessment($publicUrl, $absolutePath, $analysis);
         }
 
         $parsed = $this->parseJsonReply((string) $analysis['reply']);
@@ -66,7 +70,11 @@ PROMPT;
                 'reply' => $analysis['reply'],
             ]);
 
-            return $fallback;
+            return $this->fallbackAssessment($publicUrl, $absolutePath, [
+                'provider' => $analysis['provider'] ?? null,
+                'model' => $analysis['model'] ?? null,
+                'error' => 'invalid_json',
+            ]);
         }
 
         return [
@@ -88,11 +96,47 @@ PROMPT;
         ];
     }
 
-    private function fallbackAssessment(string $publicUrl): array
+    private function fallbackAssessment(string $publicUrl, ?string $absolutePath = null, array $failureContext = []): array
     {
+        $notes = [
+            'Analyse photo automatique indisponible ou peu fiable pour cette image.',
+        ];
+
+        $recommendedQuestions = [
+            'L\'ecran a-t-il des rayures visibles ?',
+            'Y a-t-il une fissure a l\'avant ou a l\'arriere ?',
+            'La camera et Face ID fonctionnent-ils normalement ?',
+        ];
+
+        $reason = (string) ($failureContext['error'] ?? '');
+        if ($reason === 'quota_exceeded') {
+            $notes[] = 'Le provider IA a temporairement atteint sa limite de quota. Reessayez plus tard pour une analyse visuelle enrichie.';
+        } elseif ($reason === 'provider_unavailable') {
+            $notes[] = 'Le provider IA est temporairement indisponible. L estimation repose sur les informations manuelles.';
+        } elseif ($reason === 'unauthorized') {
+            $notes[] = 'La configuration du provider IA doit etre reverifiee pour relancer l analyse photo.';
+        } elseif ($reason === 'invalid_json') {
+            $notes[] = 'La reponse IA recue n etait pas exploitable automatiquement.';
+        }
+
+        if ($absolutePath !== null && is_file($absolutePath)) {
+            $imageSize = @getimagesize($absolutePath);
+            if (is_array($imageSize) && count($imageSize) >= 2) {
+                [$width, $height] = $imageSize;
+
+                if ($width < 700 || $height < 700) {
+                    $notes[] = 'La photo semble de resolution limitee; un plan plus net et plus rapproche de l ecran aidera l estimation.';
+                }
+
+                if ($width > $height) {
+                    $recommendedQuestions[] = 'Peux-tu envoyer une photo verticale de face de l ecran ?';
+                }
+            }
+        }
+
         return [
-            'provider' => null,
-            'model' => null,
+            'provider' => $failureContext['provider'] ?? null,
+            'model' => $failureContext['model'] ?? null,
             'overall_condition' => 'fair',
             'confidence' => 0.2,
             'detected_issues' => [
@@ -102,14 +146,8 @@ PROMPT;
                 'frame_dents' => false,
                 'camera_damage' => false,
             ],
-            'notes' => [
-                'Analyse photo automatique indisponible ou peu fiable pour cette image.',
-            ],
-            'recommended_questions' => [
-                'L\'ecran a-t-il des rayures visibles ?',
-                'Y a-t-il une fissure a l\'avant ou a l\'arriere ?',
-                'La camera et Face ID fonctionnent-ils normalement ?',
-            ],
+            'notes' => array_values(array_unique($notes)),
+            'recommended_questions' => array_slice(array_values(array_unique($recommendedQuestions)), 0, 4),
             'image_url' => $publicUrl,
             'source' => 'fallback',
         ];

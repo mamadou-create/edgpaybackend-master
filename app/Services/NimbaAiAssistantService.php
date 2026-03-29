@@ -171,52 +171,154 @@ class NimbaAiAssistantService
             return null;
         }
 
-        $resolvedConfig = $this->resolveProviderConfig($context);
-        $provider = $resolvedConfig['provider'];
-        $baseUrl = $resolvedConfig['base_url'];
-        $apiKey = $resolvedConfig['api_key'];
-        $model = $resolvedConfig['model'];
-
-        if (!$this->supportsProvider($provider) || $baseUrl === '' || $apiKey === '' || $images === []) {
+        if ($images === []) {
             return null;
         }
 
-        try {
-            $response = match ($provider) {
-                'gemini', 'google', 'google-gemini' => $this->sendGeminiVisionRequest($baseUrl, $apiKey, $instruction, $images, $resolvedConfig),
-                'claude', 'anthropic' => $this->sendClaudeVisionRequest($baseUrl, $apiKey, $instruction, $images, $resolvedConfig),
-                default => $this->sendOpenAiCompatibleVisionRequest($baseUrl, $apiKey, $instruction, $images, $resolvedConfig),
-            };
+        $lastFailure = null;
 
-            if (!$response->successful()) {
-                Log::warning('nimba_ai.vision_request_failed', [
-                    'status' => $response->status(),
-                    'body' => $response->json() ?? $response->body(),
-                ]);
+        foreach ($this->resolveVisionProviderConfigs($context) as $resolvedConfig) {
+            $provider = $resolvedConfig['provider'];
+            $baseUrl = $resolvedConfig['base_url'];
+            $apiKey = $resolvedConfig['api_key'];
+            $model = $resolvedConfig['model'];
 
-                return null;
+            if (!$this->supportsProvider($provider) || $baseUrl === '' || $apiKey === '') {
+                continue;
             }
 
-            $payload = $response->json();
-            $content = $this->extractAssistantContent($provider, $payload);
+            try {
+                $response = match ($provider) {
+                    'gemini', 'google', 'google-gemini' => $this->sendGeminiVisionRequest($baseUrl, $apiKey, $instruction, $images, $resolvedConfig),
+                    'claude', 'anthropic' => $this->sendClaudeVisionRequest($baseUrl, $apiKey, $instruction, $images, $resolvedConfig),
+                    default => $this->sendOpenAiCompatibleVisionRequest($baseUrl, $apiKey, $instruction, $images, $resolvedConfig),
+                };
 
-            if ($content === '') {
-                return null;
+                if (!$response->successful()) {
+                    $lastFailure = $this->buildVisionFailureContext(
+                        provider: $provider,
+                        model: $model,
+                        status: $response->status(),
+                        body: $response->json() ?? $response->body(),
+                    );
+
+                    Log::warning('nimba_ai.vision_request_failed', $lastFailure);
+                    continue;
+                }
+
+                $payload = $response->json();
+                $content = $this->extractAssistantContent($provider, $payload);
+
+                if ($content === '') {
+                    $lastFailure = [
+                        'provider' => $provider,
+                        'model' => $model,
+                        'error' => 'empty_response',
+                        'message' => 'Réponse vision vide du provider',
+                    ];
+
+                    continue;
+                }
+
+                return [
+                    'reply' => $content,
+                    'provider' => $provider,
+                    'model' => $this->extractModelName($provider, $payload, $model),
+                    'finish_reason' => $this->extractFinishReason($provider, $payload),
+                ];
+            } catch (\Throwable $error) {
+                $lastFailure = [
+                    'provider' => $provider,
+                    'model' => $model,
+                    'error' => 'exception',
+                    'message' => $error->getMessage(),
+                ];
+
+                Log::warning('nimba_ai.vision_exception', $lastFailure);
+            }
+        }
+
+        return $lastFailure;
+    }
+
+    private function resolveVisionProviderConfigs(array $context): array
+    {
+        $candidates = [];
+        $seen = [];
+
+        $resolvedPrimary = $this->resolveProviderConfig($context);
+        $primaryProvider = $resolvedPrimary['provider'];
+        $candidates[] = $resolvedPrimary;
+        $seen[$primaryProvider] = true;
+
+        $providers = config('services.nimba_ai.providers', []);
+        if (!is_array($providers)) {
+            return $candidates;
+        }
+
+        foreach ($providers as $providerName => $providerConfig) {
+            $canonicalProvider = $this->canonicalProvider((string) $providerName);
+            if (isset($seen[$canonicalProvider]) || !is_array($providerConfig)) {
+                continue;
             }
 
-            return [
-                'reply' => $content,
-                'provider' => $provider,
-                'model' => $this->extractModelName($provider, $payload, $model),
-                'finish_reason' => $this->extractFinishReason($provider, $payload),
+            $candidate = [
+                'provider' => $canonicalProvider,
+                'base_url' => $this->firstNonEmptyString(
+                    $providerConfig['base_url'] ?? null,
+                    config('services.nimba_ai.base_url', ''),
+                ),
+                'api_key' => $this->firstNonEmptyString(
+                    $providerConfig['api_key'] ?? null,
+                    config('services.nimba_ai.api_key', ''),
+                ),
+                'model' => $this->firstNonEmptyString(
+                    $providerConfig['model'] ?? null,
+                    config('services.nimba_ai.model', 'gpt-4.1-mini'),
+                ),
+                'organization' => $this->firstNonEmptyString(
+                    $providerConfig['organization'] ?? null,
+                    config('services.nimba_ai.organization', ''),
+                ),
+                'project' => $this->firstNonEmptyString(
+                    $providerConfig['project'] ?? null,
+                    config('services.nimba_ai.project', ''),
+                ),
+                'version' => $this->firstNonEmptyString(
+                    $providerConfig['version'] ?? null,
+                    '2023-06-01',
+                ),
             ];
-        } catch (\Throwable $error) {
-            Log::warning('nimba_ai.vision_exception', [
-                'error' => $error->getMessage(),
-            ]);
 
-            return null;
+            if ($candidate['base_url'] === '' || $candidate['api_key'] === '') {
+                continue;
+            }
+
+            $seen[$canonicalProvider] = true;
+            $candidates[] = $candidate;
         }
+
+        return $candidates;
+    }
+
+    private function buildVisionFailureContext(string $provider, string $model, int $status, mixed $body): array
+    {
+        $bodyText = is_string($body) ? $body : json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $normalizedBody = mb_strtolower((string) $bodyText, 'UTF-8');
+        $error = match (true) {
+            $status === 429 || str_contains($normalizedBody, 'resource_exhausted') || str_contains($normalizedBody, 'quota') => 'quota_exceeded',
+            $status === 401 || $status === 403 => 'unauthorized',
+            $status >= 500 => 'provider_unavailable',
+            default => 'request_failed',
+        };
+
+        return [
+            'provider' => $provider,
+            'model' => $model,
+            'status' => $status,
+            'error' => $error,
+            'body' => $body,
+        ];
     }
 
     private function supportsProvider(string $provider): bool
