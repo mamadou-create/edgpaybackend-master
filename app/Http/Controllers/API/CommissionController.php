@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers\API;
 
+use App\Enums\RoleEnum;
 use App\Http\Controllers\Controller;
 use App\Interfaces\CommissionRepositoryInterface;
+use App\Models\User;
 use App\Classes\ApiResponseClass;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -87,6 +89,10 @@ class CommissionController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
+        if (!$this->isSuperAdminUser($request->user())) {
+            return ApiResponseClass::forbidden('Accès réservé au super admin.');
+        }
+
         DB::beginTransaction();
         try {
             $validator = Validator::make($request->all(), [
@@ -125,6 +131,10 @@ class CommissionController extends Controller
      */
     public function update(Request $request, string $id): JsonResponse
     {
+        if (!$this->isSuperAdminUser($request->user())) {
+            return ApiResponseClass::forbidden('Accès réservé au super admin.');
+        }
+
         DB::beginTransaction();
         try {
             $validator = Validator::make($request->all(), [
@@ -168,6 +178,10 @@ class CommissionController extends Controller
      */
     public function updateByKey(Request $request, string $key): JsonResponse
     {
+        if (!$this->isSuperAdminUser($request->user())) {
+            return ApiResponseClass::forbidden('Accès réservé au super admin.');
+        }
+
         DB::beginTransaction();
         try {
             $request->validate([
@@ -194,6 +208,10 @@ class CommissionController extends Controller
      */
     public function updateMultiple(Request $request): JsonResponse
     {
+        if (!$this->isSuperAdminUser($request->user())) {
+            return ApiResponseClass::forbidden('Accès réservé au super admin.');
+        }
+
         DB::beginTransaction();
         try {
             $request->validate([
@@ -257,6 +275,10 @@ class CommissionController extends Controller
      */
     public function destroy(string $id): JsonResponse
     {
+        if (!$this->isSuperAdminUser(request()->user())) {
+            return ApiResponseClass::forbidden('Accès réservé au super admin.');
+        }
+
         DB::beginTransaction();
         try {
             $commission = $this->commissionRepository->getByID($id);
@@ -285,6 +307,10 @@ class CommissionController extends Controller
      */
     public function destroyByKey(string $key): JsonResponse
     {
+        if (!$this->isSuperAdminUser(request()->user())) {
+            return ApiResponseClass::forbidden('Accès réservé au super admin.');
+        }
+
         DB::beginTransaction();
         try {
             $commission = $this->commissionRepository->getByKey($key);
@@ -334,6 +360,19 @@ class CommissionController extends Controller
             Log::error('Erreur lors de la récupération de la commission par défaut: ' . $e->getMessage());
             return ApiResponseClass::serverError('Erreur lors de la récupération de la commission par défaut');
         }
+    }
+
+    private function isSuperAdminUser(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if (method_exists($user, 'isSuperAdmin') && $user->isSuperAdmin()) {
+            return true;
+        }
+
+        return (string) optional($user->role)->slug === RoleEnum::SUPER_ADMIN;
     }
 
 }

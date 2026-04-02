@@ -72,6 +72,18 @@ class SystemSettingRepository implements SystemSettingRepositoryInterface
                 'description' => 'Pourcentage de frais appliqué aux transferts client->client strictement supérieurs à 1 000 000 GNF',
                 'order' => 33,
             ],
+            'announcement_publication_fee_amount' => [
+                'type' => 'integer',
+                'group' => 'payments',
+                'description' => 'Ancienne clé de tarification de publication des annonces clients',
+                'order' => 34,
+            ],
+            'announcement_publication_fee_year_amount' => [
+                'type' => 'integer',
+                'group' => 'payments',
+                'description' => 'Montant annuel de référence facturé au client pour 365 jours de diffusion d annonce',
+                'order' => 35,
+            ],
             'chatbot_intent_keywords_prepaid_bill' => [
                 'type' => 'string',
                 'group' => 'chatbot',

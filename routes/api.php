@@ -2,6 +2,8 @@
 // Fichier: routes/api.php
 
 use App\Http\Controllers\API\AnnouncementController;
+use App\Http\Controllers\API\AdminDocumentProfileController;
+use App\Http\Controllers\API\AdminDocumentDispatchController;
 use App\Http\Controllers\API\CreanceController;
 use App\Http\Controllers\API\RiskDashboardController;
 use App\Http\Controllers\API\ApiClientController;
@@ -20,10 +22,13 @@ use App\Http\Controllers\API\RoleController;
 use App\Http\Controllers\API\SmsController;
 use App\Http\Controllers\API\SystemSettingController;
 use App\Http\Controllers\API\TopupRequestController;
+use App\Http\Controllers\API\UsedItemListingController;
 use App\Http\Controllers\API\ClientWalletController;
 use App\Http\Controllers\API\ChatbotController;
 use App\Http\Controllers\Troc\TrocController;
+use App\Http\Controllers\Troc\TrocAdminController;
 use App\Http\Controllers\Troc\TrocImageController;
+use App\Http\Controllers\Troc\TrocNotificationController;
 use App\Http\Controllers\API\WhatsAppFintechController;
 use App\Http\Controllers\API\WhatsAppWebhookController;
 use App\Http\Controllers\API\WalletController;
@@ -93,6 +98,11 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
     Route::put('profile', [AuthController::class, 'updateProfile']);
     Route::post('enable-two-factor', [AuthController::class, 'enableTwoFactor']);
     Route::post('disable-two-factor', [AuthController::class, 'disableTwoFactor']);
+
+    // Profil documentaire admin (bon de commande / bon de paiement / reçu)
+    Route::get('admin-document-profile', [AdminDocumentProfileController::class, 'show']);
+    Route::put('admin-document-profile', [AdminDocumentProfileController::class, 'update']);
+    Route::post('admin-document-dispatch', [AdminDocumentDispatchController::class, 'send']);
 
 
     //ROLES
@@ -268,9 +278,25 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
     });
 
     Route::prefix('troc')->group(function () {
+        Route::get('/catalog', [TrocController::class, 'catalog']);
+        Route::get('/notifications', [TrocNotificationController::class, 'index']);
+        Route::put('/notifications/read-all', [TrocNotificationController::class, 'markAllAsRead']);
+        Route::put('/notifications/{notificationId}/read', [TrocNotificationController::class, 'markAsRead']);
+        Route::get('/requests', [TrocController::class, 'myRequests']);
         Route::post('/evaluate', [TrocController::class, 'evaluate']);
         Route::post('/trade', [TrocController::class, 'trade']);
         Route::post('/upload', [TrocImageController::class, 'store']);
+        Route::post('/requests', [TrocController::class, 'storeRequest']);
+
+        Route::prefix('admin')->group(function () {
+            Route::get('/requests', [TrocAdminController::class, 'requestsIndex']);
+            Route::patch('/requests/{trocRequest}', [TrocAdminController::class, 'updateRequest']);
+            Route::put('/requests/{trocRequest}', [TrocAdminController::class, 'updateRequest']);
+            Route::get('/catalog', [TrocAdminController::class, 'catalogIndex']);
+            Route::post('/catalog', [TrocAdminController::class, 'storeCatalog']);
+            Route::put('/catalog/{catalogItem}', [TrocAdminController::class, 'updateCatalog']);
+            Route::delete('/catalog/{catalogItem}', [TrocAdminController::class, 'destroyCatalog']);
+        });
     });
 
     Route::prefix('compteurs')->group(function () {
@@ -464,9 +490,30 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
         Route::post('/', [AnnouncementController::class, 'store']);
         Route::get('/stats', [AnnouncementController::class, 'stats']);
         Route::get('/{id}', [AnnouncementController::class, 'show']);
+        Route::post('/{id}/toggle-like', [AnnouncementController::class, 'toggleLike']);
+        Route::get('/{id}/comments', [AnnouncementController::class, 'comments']);
+        Route::post('/{id}/comments', [AnnouncementController::class, 'storeComment']);
+        Route::post('/{id}/approve', [AnnouncementController::class, 'approve']);
+        Route::post('/{id}/reject', [AnnouncementController::class, 'reject']);
         Route::post('/mark-all-read', [AnnouncementController::class, 'markAllAsRead']);
         Route::post('/{id}/mark-read', [AnnouncementController::class, 'markAsRead']);
         Route::delete('/{id}', [AnnouncementController::class, 'destroy']);
+    });
+
+    Route::prefix('occasions')->group(function () {
+        Route::get('/', [UsedItemListingController::class, 'index']);
+        Route::get('/mine', [UsedItemListingController::class, 'myListings']);
+        Route::post('/upload', [UsedItemListingController::class, 'uploadImage']);
+        Route::post('/', [UsedItemListingController::class, 'store']);
+        Route::get('/{listing}/bids', [UsedItemListingController::class, 'bidHistory']);
+        Route::post('/{listing}/bids', [UsedItemListingController::class, 'placeBid']);
+        Route::match(['put', 'patch'], '/{listing}/status', [UsedItemListingController::class, 'updateStatus']);
+        Route::delete('/{listing}', [UsedItemListingController::class, 'destroy']);
+    });
+
+    Route::prefix('admin/occasions')->group(function () {
+        Route::get('/', [UsedItemListingController::class, 'adminIndex']);
+        Route::match(['put', 'patch'], '/{listing}', [UsedItemListingController::class, 'adminUpdate']);
     });
 
 

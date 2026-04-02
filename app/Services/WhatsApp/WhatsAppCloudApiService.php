@@ -97,6 +97,95 @@ class WhatsAppCloudApiService
         ];
     }
 
+    public function sendDocumentMessage(
+        string $phone,
+        string $documentBytes,
+        string $fileName,
+        string $mimeType = 'application/pdf',
+        ?string $caption = null,
+    ): array {
+        $normalizedPhone = $this->normalizePhoneForOutbound($phone);
+        $token = config('whatsapp.access_token');
+        $phoneNumberId = config('whatsapp.phone_number_id');
+        $graphUrl = rtrim((string) config('whatsapp.graph_url'), '/');
+
+        if (!$token || !$phoneNumberId) {
+            Log::info('whatsapp.outbound.document.mock', [
+                'phone' => $normalizedPhone,
+                'file_name' => $fileName,
+                'caption' => $caption,
+            ]);
+
+            return [
+                'success' => true,
+                'mocked' => true,
+                'message' => 'Document WhatsApp journalisé localement, credentials absents.',
+            ];
+        }
+
+        $uploadResponse = Http::withToken($token)
+            ->acceptJson()
+            ->attach('file', $documentBytes, $fileName, ['Content-Type' => $mimeType])
+            ->post("{$graphUrl}/{$phoneNumberId}/media", [
+                'messaging_product' => 'whatsapp',
+            ]);
+
+        if (!$uploadResponse->successful()) {
+            Log::warning('whatsapp.outbound.document_upload_failed', [
+                'phone' => $normalizedPhone,
+                'status' => $uploadResponse->status(),
+                'body' => $uploadResponse->json(),
+            ]);
+
+            return [
+                'success' => false,
+                'status' => $uploadResponse->status(),
+                'data' => $uploadResponse->json(),
+                'step' => 'upload',
+            ];
+        }
+
+        $mediaId = (string) Arr::get($uploadResponse->json(), 'id', '');
+        if ($mediaId === '') {
+            return [
+                'success' => false,
+                'status' => 500,
+                'data' => $uploadResponse->json(),
+                'step' => 'upload_missing_media_id',
+            ];
+        }
+
+        $payload = [
+            'messaging_product' => 'whatsapp',
+            'to' => $normalizedPhone,
+            'type' => 'document',
+            'document' => array_filter([
+                'id' => $mediaId,
+                'caption' => $caption,
+                'filename' => $fileName,
+            ], static fn ($value) => $value !== null && $value !== ''),
+        ];
+
+        $sendResponse = Http::withToken($token)
+            ->acceptJson()
+            ->post("{$graphUrl}/{$phoneNumberId}/messages", $payload);
+
+        if (!$sendResponse->successful()) {
+            Log::warning('whatsapp.outbound.document_failed', [
+                'phone' => $normalizedPhone,
+                'status' => $sendResponse->status(),
+                'body' => $sendResponse->json(),
+            ]);
+        }
+
+        return [
+            'success' => $sendResponse->successful(),
+            'status' => $sendResponse->status(),
+            'data' => $sendResponse->json(),
+            'media_id' => $mediaId,
+        ];
+    }
+
     public function normalizePhone(string $phone): string
     {
         $normalized = preg_replace('/\D+/', '', $phone) ?? '';

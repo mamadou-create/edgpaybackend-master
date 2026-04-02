@@ -5,11 +5,26 @@ namespace App\Http\Controllers\Troc;
 use App\Classes\ApiResponseClass;
 use App\Http\Controllers\Controller;
 use App\Models\TrocPhonePrice;
+use App\Models\TrocRequest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 
 class TrocController extends Controller
 {
+    public function catalog(): JsonResponse
+    {
+        $items = TrocPhonePrice::query()
+            ->orderBy('model')
+            ->orderBy('storage')
+            ->get();
+
+        return ApiResponseClass::sendResponse(
+            $items->map(fn(TrocPhonePrice $item) => $this->serializeCatalogItem($item))->values(),
+            'Catalogue troc récupéré avec succès'
+        );
+    }
+
     public function evaluate(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -96,6 +111,78 @@ class TrocController extends Controller
             'message' => $message,
             'currency' => config('troc.display_currency', 'GNF'),
         ], 'Simulation de troc calculée avec succès');
+    }
+
+    public function storeRequest(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'source_model' => ['required', 'string', 'max:120'],
+            'source_storage' => ['required', 'string', 'max:50'],
+            'battery' => ['required', 'integer', 'min:0', 'max:100'],
+            'condition' => ['required', 'string', 'max:50'],
+            'condition_details' => ['nullable', 'array'],
+            'image_url' => ['nullable', 'string', 'max:2048'],
+            'image_analysis' => ['nullable', 'array'],
+            'estimated_price' => ['required', 'numeric', 'min:0'],
+            'target_model' => ['required', 'string', 'max:120'],
+            'target_storage' => ['required', 'string', 'max:50'],
+            'target_price' => ['required', 'numeric', 'min:0'],
+            'difference' => ['required', 'numeric'],
+            'currency' => ['nullable', 'string', 'max:10'],
+            'offer_message' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $trocRequest = TrocRequest::query()->create([
+            'user_id' => Auth::id(),
+            'source_model' => $validated['source_model'],
+            'source_storage' => strtoupper((string) $validated['source_storage']),
+            'battery' => (int) $validated['battery'],
+            'condition' => $validated['condition'],
+            'condition_details' => $validated['condition_details'] ?? [],
+            'image_url' => $validated['image_url'] ?? null,
+            'image_analysis' => $validated['image_analysis'] ?? [],
+            'estimated_price' => (float) $validated['estimated_price'],
+            'target_model' => $validated['target_model'],
+            'target_storage' => strtoupper((string) $validated['target_storage']),
+            'target_price' => (float) $validated['target_price'],
+            'difference' => (float) $validated['difference'],
+            'currency' => $validated['currency'] ?? config('troc.display_currency', 'GNF'),
+            'offer_message' => $validated['offer_message'] ?? null,
+            'status' => TrocRequest::STATUS_PENDING,
+        ]);
+
+        $trocRequest->loadMissing('user:id,display_name,email,phone');
+
+        return ApiResponseClass::created([
+            'request' => $this->serializeRequest($trocRequest),
+        ], 'Demande de troc envoyée avec succès');
+    }
+
+    public function myRequests(Request $request): JsonResponse
+    {
+        $user = Auth::user();
+        if (!$user) {
+            return ApiResponseClass::unauthorized('Utilisateur non authentifié.');
+        }
+
+        $status = trim((string) $request->query('status', ''));
+        $limit = max(1, min((int) $request->query('limit', 50), 100));
+
+        $query = TrocRequest::query()
+            ->where('user_id', $user->id)
+            ->with(['user:id,display_name,email,phone'])
+            ->orderByDesc('created_at');
+
+        if ($status !== '' && in_array($status, TrocRequest::statuses(), true)) {
+            $query->where('status', $status);
+        }
+
+        $items = $query->limit($limit)->get();
+
+        return ApiResponseClass::sendResponse(
+            $items->map(fn(TrocRequest $item) => $this->serializeRequest($item))->values(),
+            'Historique troc récupéré avec succès'
+        );
     }
 
     private function convertDeductionItemsToGnf(array $items): array
@@ -291,6 +378,49 @@ class TrocController extends Controller
                 return $this->normalize((string) $price->model) === $normalizedModel
                     && $this->normalize((string) $price->storage) === $normalizedStorage;
             });
+    }
+
+    private function serializeCatalogItem(TrocPhonePrice $item): array
+    {
+        return [
+            'id' => $item->id,
+            'model' => $item->model,
+            'storage' => $item->storage,
+            'base_price' => (float) $item->base_price,
+            'market_price' => $this->convertReferencePriceToGnf((float) $item->base_price),
+            'currency' => config('troc.display_currency', 'GNF'),
+        ];
+    }
+
+    private function serializeRequest(TrocRequest $item): array
+    {
+        return [
+            'id' => $item->id,
+            'status' => $item->status,
+            'source_model' => $item->source_model,
+            'source_storage' => $item->source_storage,
+            'battery' => $item->battery,
+            'condition' => $item->condition,
+            'condition_details' => $item->condition_details ?? [],
+            'image_url' => $item->image_url,
+            'image_analysis' => $item->image_analysis ?? [],
+            'estimated_price' => (float) $item->estimated_price,
+            'target_model' => $item->target_model,
+            'target_storage' => $item->target_storage,
+            'target_price' => (float) $item->target_price,
+            'difference' => (float) $item->difference,
+            'currency' => $item->currency,
+            'offer_message' => $item->offer_message,
+            'admin_notes' => $item->admin_notes,
+            'processed_at' => optional($item->processed_at)?->toIso8601String(),
+            'created_at' => optional($item->created_at)?->toIso8601String(),
+            'user' => $item->user ? [
+                'id' => $item->user->id,
+                'display_name' => $item->user->display_name,
+                'email' => $item->user->email,
+                'phone' => $item->user->phone,
+            ] : null,
+        ];
     }
 
     private function normalize(string $value): string

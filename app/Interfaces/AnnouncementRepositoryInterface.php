@@ -9,9 +9,11 @@ use Illuminate\Database\Eloquent\Collection;
 interface AnnouncementRepositoryInterface
 {
     public function all(): Collection;
-    public function getLatestAnnouncements($role, $userId, $status = null, $limit = 20);
+    public function getLatestAnnouncements($role, $userId, $status = null, $limit = 20, ?string $lifecycle = null, ?string $moderationStatus = null);
+    public function getLifecycleCounts($role, $userId): array;
+    public function getModerationCounts($role, $userId): array;
     public function paginate(int $perPage = 15): LengthAwarePaginator;
-    public function find(string $id): ?Announcement;
+    public function find(string $id, ?string $userId = null): ?Announcement;
     public function create(array $data): Announcement;
     public function update(string $id, array $data): bool;
     public function delete(string $id): bool;
