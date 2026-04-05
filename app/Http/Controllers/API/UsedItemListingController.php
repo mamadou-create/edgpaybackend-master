@@ -17,11 +17,15 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Carbon;
 use Throwable;
 
 class UsedItemListingController extends Controller
 {
     private const PUBLICATION_FEE_KEY = 'occasion_publication_fee_rate';
+    private const STANDARD_PUBLICATION_THRESHOLD = 50000000;
+    private const STANDARD_PUBLICATION_MONTHS = 6;
+    private const EXTENDED_PUBLICATION_MONTHS = 12;
 
     public function __construct(
         private readonly WalletService $walletService,
@@ -41,6 +45,10 @@ class UsedItemListingController extends Controller
             ->withCount('bids')
             ->withMax('bids', 'amount')
             ->where('moderation_status', UsedItemListing::MODERATION_APPROVED)
+            ->where(function ($builder) {
+                $builder->whereNull('publication_ends_at')
+                    ->orWhere('publication_ends_at', '>', now());
+            })
             ->when($status !== 'all', fn ($builder) => $builder->where('status', $status))
             ->when($saleType !== '' && in_array($saleType, UsedItemListing::saleTypes(), true), fn ($builder) => $builder->where('sale_type', $saleType))
             ->when($query !== '', function ($builder) use ($query) {
@@ -114,6 +122,10 @@ class UsedItemListingController extends Controller
                 $feeRate = $this->resolvePublicationFeeRate();
                 $baseAmount = $this->resolvePublicationFeeBaseAmount($saleType, $validated);
                 $feeAmount = $this->calculatePublicationFeeAmount($baseAmount, $feeRate);
+                $publicationEndsAt = $this->resolvePublicationEndsAt(
+                    startsAt: now(),
+                    baseAmount: $baseAmount,
+                );
 
                 if ($feeAmount > 0) {
                     $superAdmin = $this->resolveSuperAdminReceiver();
@@ -148,6 +160,7 @@ class UsedItemListingController extends Controller
                     'publication_fee_rate' => $feeRate,
                     'publication_fee_base_amount' => $baseAmount,
                     'publication_fee_amount' => $feeAmount,
+                    'publication_ends_at' => $publicationEndsAt,
                     'status' => UsedItemListing::STATUS_ACTIVE,
                     'moderation_status' => UsedItemListing::MODERATION_PENDING,
                     'admin_notes' => null,
@@ -262,6 +275,10 @@ class UsedItemListingController extends Controller
 
         if ($listing->status !== UsedItemListing::STATUS_ACTIVE) {
             return ApiResponseClass::sendError('Cette annonce n\'est plus active.', null, 422);
+        }
+
+        if ($this->isPublicationExpired($listing)) {
+            return ApiResponseClass::sendError('La durée de diffusion de cette annonce est expirée.', null, 422);
         }
 
         if ($listing->auction_ends_at !== null && $listing->auction_ends_at->isPast()) {
@@ -491,6 +508,9 @@ class UsedItemListingController extends Controller
             (float) ($listing->starting_bid ?? 0),
             (float) (($listing->bids_max_amount ?? null) ?? 0)
         );
+        $publicationBaseAmount = (float) ($listing->publication_fee_base_amount ?? 0);
+        $publicationDurationMonths = $this->resolvePublicationDurationMonths($publicationBaseAmount);
+        $isExpired = $this->isPublicationExpired($listing);
 
         return [
             'id' => (string) $listing->id,
@@ -518,6 +538,9 @@ class UsedItemListingController extends Controller
             'publication_fee_amount' => (float) ($listing->publication_fee_amount ?? 0),
             'publication_fee_refunded_amount' => (float) ($listing->publication_fee_refunded_amount ?? 0),
             'publication_fee_refunded_at' => $listing->publication_fee_refunded_at?->toIso8601String(),
+            'publication_ends_at' => $listing->publication_ends_at?->toIso8601String(),
+            'publication_duration_months' => $publicationDurationMonths,
+            'is_expired' => $isExpired,
             'status' => $listing->status,
             'moderation_status' => $listing->moderation_status,
             'admin_notes' => $listing->admin_notes,
@@ -561,6 +584,26 @@ class UsedItemListingController extends Controller
         }
 
         return max(0, (int) round($baseAmount * $feeRate));
+    }
+
+    private function resolvePublicationDurationMonths(float $baseAmount): int
+    {
+        return $baseAmount > self::STANDARD_PUBLICATION_THRESHOLD
+            ? self::EXTENDED_PUBLICATION_MONTHS
+            : self::STANDARD_PUBLICATION_MONTHS;
+    }
+
+    private function resolvePublicationEndsAt(Carbon $startsAt, float $baseAmount): Carbon
+    {
+        return $startsAt->copy()->addMonthsNoOverflow(
+            $this->resolvePublicationDurationMonths($baseAmount)
+        );
+    }
+
+    private function isPublicationExpired(UsedItemListing $listing): bool
+    {
+        return $listing->publication_ends_at !== null
+            && $listing->publication_ends_at->isPast();
     }
 
     private function resolveSuperAdminReceiver(): User

@@ -63,6 +63,7 @@ class UsedItemListing extends Model
         'publication_fee_amount',
         'publication_fee_refunded_amount',
         'publication_fee_refunded_at',
+        'publication_ends_at',
         'status',
         'moderation_status',
         'admin_notes',
@@ -80,6 +81,7 @@ class UsedItemListing extends Model
         'image_urls' => 'array',
         'auction_ends_at' => 'datetime',
         'publication_fee_refunded_at' => 'datetime',
+        'publication_ends_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
