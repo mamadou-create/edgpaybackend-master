@@ -17,7 +17,7 @@ class CreateTopupRequestRequest extends FormRequest
         return [
             'pro_id' => ['required', 'exists:users,id'],
             'amount' => ['required','integer','min:1000'],
-            'balance_target' => ['nullable', 'in:wallet_principal,avoir_creance'],
+            'balance_target' => ['nullable', 'in:wallet_principal'],
             // 'kind' => ['required','in:' . implode(',', HelperStatus::getTopupSource())],
             // 'idempotency_key' => ['string', 'max:255','unique:topup_requests,idempotency_key'],
             'note' => ['nullable','string','max:1000'],

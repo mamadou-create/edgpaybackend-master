@@ -75,27 +75,6 @@ class CreanceController extends Controller
         return number_format((float) $v, 0, '.', ' ') . ' GNF';
     }
 
-    private function appendPotentialExcessNote(
-        string $notes,
-        float $montantSoumis,
-        float $montantImputable,
-        float $excedentPotentiel,
-    ): string {
-        $baseNotes = trim($notes);
-        if ($excedentPotentiel <= 0.01) {
-            return $baseNotes;
-        }
-
-        $systemNote = sprintf(
-            'Excédent potentiel à confirmer à la validation admin: montant soumis %s, montant imputable %s, excédent potentiel %s. Si validé, l\'excédent sera crédité dans l\'avoir créance.',
-            $this->fmtGnf($montantSoumis),
-            $this->fmtGnf($montantImputable),
-            $this->fmtGnf($excedentPotentiel),
-        );
-
-        return $baseNotes !== '' ? ($baseNotes . "\n" . $systemNote) : $systemNote;
-    }
-
     // ═══════════════════════════════════════════════════════════════════════
     //  ADMIN
     // ═══════════════════════════════════════════════════════════════════════
@@ -273,14 +252,6 @@ class CreanceController extends Controller
         try {
             $creance = $this->service->validerPaiement($transaction, $admin);
 
-            // Montants (utile pour afficher l'excédent converti en avoir).
-            $tx = CreanceTransaction::query()->find($transactionId);
-            $montantSoumis = $tx ? (float) $tx->montant : 0.0;
-            $montantAvant = $tx ? (float) $tx->montant_avant : 0.0;
-            $montantApres = $tx ? (float) $tx->montant_apres : 0.0;
-            $montantValide = max(0.0, $montantAvant - $montantApres);
-            $avoir = (int) round(max(0.0, $montantSoumis - $montantValide));
-
             // Notifier le client avec un reçu PDF (queue, best effort).
             try {
                 $mode = config('edgpay.credit.receipt_mail_mode', 'queue');
@@ -295,19 +266,10 @@ class CreanceController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => $avoir > 0
-                    ? sprintf(
-                        'Paiement validé. Excédent crédité sur l\'avoir créance : %s',
-                        $this->fmtGnf((float) $avoir)
-                    )
-                    : 'Paiement validé avec succès.',
-                'avoir_montant' => $avoir,
+                'message' => 'Paiement validé avec succès.',
                 'data'    => [
-                    'creance'           => $creance,
-                    'credit_profile'    => $creance->client->creditProfile,
-                    'montant_soumis'    => (int) round($montantSoumis),
-                    'montant_valide'    => (int) round($montantValide),
-                    'avoir_montant'     => $avoir,
+                    'creance' => $creance,
+                    'credit_profile' => $creance->client->creditProfile,
                 ],
             ]);
         } catch (\RuntimeException $e) {
@@ -572,8 +534,6 @@ class CreanceController extends Controller
         return response()->json([
             'success'        => true,
             'data'           => $creances,
-            'avoir_creance_disponible' => (float) ($user->creditProfile?->avoir_creance_disponible ?? 0),
-            'avoir_creance_cumule' => (float) ($user->creditProfile?->avoir_creance_cumule ?? 0),
             'credit_profile' => $user->creditProfile,
         ]);
     }
@@ -605,8 +565,6 @@ class CreanceController extends Controller
         return response()->json([
             'success' => true,
             'data'    => $rows,
-            'avoir_creance_disponible' => (float) ($user->creditProfile?->avoir_creance_disponible ?? 0),
-            'avoir_creance_cumule' => (float) ($user->creditProfile?->avoir_creance_cumule ?? 0),
             'credit_profile' => $user->creditProfile,
         ]);
     }
@@ -625,8 +583,6 @@ class CreanceController extends Controller
         return response()->json([
             'success'        => true,
             'data'           => $creance,
-            'avoir_creance_disponible' => (float) ($user->creditProfile?->avoir_creance_disponible ?? 0),
-            'avoir_creance_cumule' => (float) ($user->creditProfile?->avoir_creance_cumule ?? 0),
             'credit_profile' => $user->creditProfile,
         ]);
     }
@@ -647,8 +603,6 @@ class CreanceController extends Controller
         return response()->json([
             'success' => true,
             'data'    => $query->paginate($request->per_page ?? 50),
-            'avoir_creance_disponible' => (float) ($user->creditProfile?->avoir_creance_disponible ?? 0),
-            'avoir_creance_cumule' => (float) ($user->creditProfile?->avoir_creance_cumule ?? 0),
             'credit_profile' => $user->creditProfile,
         ]);
     }
@@ -663,89 +617,22 @@ class CreanceController extends Controller
             'type'    => ['required', Rule::in(['paiement_total', 'paiement_partiel'])],
             'preuve'  => ['nullable', 'file', 'max:5120'], // 5 MB
             'notes'   => ['nullable', 'string', 'max:1000'],
-            'avoir_use' => ['nullable', 'boolean'],
-            'avoir_mode' => ['nullable', Rule::in(['auto', 'manuel'])],
-            'avoir_montant' => ['nullable', 'numeric', 'min:0.01'],
         ]);
 
         $client  = Auth::user();
         $creance = Creance::where('user_id', $client->id)->findOrFail($creanceId);
-        $creditProfile = $client->creditProfile;
 
         $requestedAmount = (float) $data['montant'];
-        $useAvoir = $request->boolean('avoir_use');
-        $avoirMode = (string) ($data['avoir_mode'] ?? 'auto');
-        $avoirMontant = isset($data['avoir_montant']) ? (float) $data['avoir_montant'] : null;
-        $avoirBalanceHint = (float) (($creditProfile?->avoir_creance_disponible ?? 0) ?: 0);
         $remaining = (float) $creance->montant_restant;
         $payable = $requestedAmount;
-        $excess = 0.0;
         $type = $data['type'];
 
-        // Si avoir activé: pas d'excédent, on cap juste au restant dû.
-        $avoirToUse = 0.0;
-        if ($useAvoir) {
-            if ($remaining > 0) {
-                $requestedAmount = min($requestedAmount, $remaining);
-                $payable = $requestedAmount;
-
-                if ($avoirMode === 'manuel') {
-                    $avoirToUse = (float) max(0.0, (float) ($avoirMontant ?? 0.0));
-                } else {
-                    $avoirToUse = $payable;
-                }
-                $avoirToUse = min($avoirToUse, $payable);
-                $avoirToUse = min($avoirToUse, $avoirBalanceHint);
-            }
-        }
-
-        if (!$useAvoir && $requestedAmount > $remaining && $remaining > 0) {
+        if ($requestedAmount > $remaining && $remaining > 0) {
             $payable = $remaining;
-            $excess = $requestedAmount - $remaining;
             $type = 'paiement_total';
         }
 
         try {
-            $avoirUtilise = 0;
-            $freshClientProfile = null;
-
-            if ($useAvoir && $avoirToUse > 0.01) {
-                $idem = (string) ($request->header('X-Idempotency-Key') ?: Str::uuid()->toString());
-                $ref = 'avoir_pay_creance:' . $idem . ':' . (string) $creance->id;
-
-                $avoirResult = $this->service->payerCreanceAvecWallet(
-                    $client,
-                    $creance,
-                    (float) $avoirToUse,
-                    $ref,
-                    [
-                        'creance_id' => (string) $creance->id,
-                        'montant_demande' => $requestedAmount,
-                        'avoir_mode' => $avoirMode,
-                    ]
-                );
-                $avoirUtilise = (int) ($avoirResult['wallet_debite'] ?? 0);
-
-                // Recharger la créance après application de l'avoir.
-                $creance = Creance::where('user_id', $client->id)->findOrFail($creanceId);
-                $remaining = (float) $creance->montant_restant;
-                $payable = max(0.0, (float) $requestedAmount - (float) $avoirUtilise);
-                $freshClientProfile = User::with('creditProfile')->find($client->id)?->creditProfile;
-            }
-
-            if ($payable <= 0.01) {
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Paiement effectué via votre avoir créance.',
-                    'data' => [
-                        'creance_id' => (string) $creance->id,
-                        'avoir_montant' => $avoirUtilise,
-                        'credit_profile' => $freshClientProfile,
-                    ],
-                    'avoir_montant' => $avoirUtilise,
-                ], 201);
-            }
-
             // Backend expects `type`: paiement_total | paiement_partiel
             if ($remaining > 0 && abs($remaining - $payable) < 0.01) {
                 $type = 'paiement_total';
@@ -753,24 +640,14 @@ class CreanceController extends Controller
                 $type = 'paiement_partiel';
             }
 
-            $avoirPotentiel = (int) round(max(0.0, $excess));
-            $submissionNotes = $this->appendPotentialExcessNote(
-                (string) ($data['notes'] ?? ''),
-                (float) $requestedAmount,
-                (float) $payable,
-                (float) $avoirPotentiel,
-            );
-
             $tx = $this->service->soumettreRembours(
                 $client,
                 $creance,
                 (float) $payable,
                 $type,
                 $request->file('preuve'),
-                $submissionNotes
+                (string) ($data['notes'] ?? '')
             );
-
-            $avoir = 0;
 
             // Notifier par email (queue, best effort) qu'un remboursement a été soumis.
             try {
@@ -789,17 +666,10 @@ class CreanceController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => $avoirPotentiel > 0
-                    ? sprintf('Paiement soumis. Excédent en attente de validation admin : %s', $this->fmtGnf((float) $avoirPotentiel))
-                    : 'Paiement soumis. En attente de validation admin.',
+                'message' => 'Paiement soumis. En attente de validation admin.',
                 'data'    => [
                     'transaction' => $tx,
-                    'credit_profile' => $freshClientProfile,
-                    'avoir_montant' => $avoirUtilise,
-                    'avoir_montant_potentiel' => $avoirPotentiel,
                 ],
-                'avoir_montant' => $avoirUtilise,
-                'avoir_montant_potentiel' => $avoirPotentiel,
             ], 201);
 
         } catch (\RuntimeException $e) {
@@ -820,24 +690,13 @@ class CreanceController extends Controller
             'montant' => ['nullable', 'numeric', 'min:0.01'],
             'preuve'  => ['nullable', 'file', 'max:5120'], // 5 MB
             'notes'   => ['nullable', 'string', 'max:1000'],
-            'avoir_use' => ['nullable', 'boolean'],
-            'avoir_mode' => ['nullable', Rule::in(['auto', 'manuel'])],
-            'avoir_montant' => ['nullable', 'numeric', 'min:0.01'],
         ]);
 
         $client = Auth::user();
-        $creditProfile = $client->creditProfile;
         $batchKey = (string) ($request->header('X-Idempotency-Key') ?: Str::uuid()->toString());
 
         $requestedAmount = isset($data['montant']) ? (float) $data['montant'] : null;
-        $useAvoir = $request->boolean('avoir_use');
-        $avoirMode = (string) ($data['avoir_mode'] ?? 'auto');
-        $avoirMontant = isset($data['avoir_montant']) ? (float) $data['avoir_montant'] : null;
-        $avoirBalanceHint = (float) (($creditProfile?->avoir_creance_disponible ?? 0) ?: 0);
         $payable = $requestedAmount;
-        $excess = 0.0;
-
-        $avoirToUse = 0.0;
 
         $totalRestant = (float) Creance::query()
             ->where('user_id', $client->id)
@@ -848,82 +707,18 @@ class CreanceController extends Controller
             return response()->json(['success' => false, 'message' => 'Aucun montant restant à payer.'], 422);
         }
 
-        if ($useAvoir) {
-            if ($requestedAmount === null) {
-                $requestedAmount = min($totalRestant, $avoirBalanceHint);
-            } else {
-                $requestedAmount = min($requestedAmount, $totalRestant);
-            }
-
-            $payable = $requestedAmount;
-
-            if ($avoirMode === 'manuel') {
-                $avoirToUse = (float) max(0.0, (float) ($avoirMontant ?? 0.0));
-            } else {
-                $avoirToUse = (float) ($payable ?? 0.0);
-            }
-            $avoirToUse = min($avoirToUse, (float) ($payable ?? 0.0));
-            $avoirToUse = min($avoirToUse, $avoirBalanceHint);
-        } elseif ($requestedAmount !== null && $requestedAmount > $totalRestant) {
+        if ($requestedAmount !== null && $requestedAmount > $totalRestant) {
             $payable = $totalRestant;
-            $excess = $requestedAmount - $totalRestant;
         }
 
         try {
-            $avoirUtilise = 0;
-            $freshClientProfile = null;
-
-            if ($useAvoir && $avoirToUse > 0.01) {
-                $idem = (string) ($request->header('X-Idempotency-Key') ?: $batchKey);
-                $ref = 'avoir_pay_creance_total:' . $idem;
-
-                $avoirResult = $this->service->payerTotalAvecWallet(
-                    $client,
-                    (float) $avoirToUse,
-                    $ref,
-                    [
-                        'batch_key' => (string) $batchKey,
-                        'montant_demande' => $requestedAmount,
-                        'avoir_mode' => $avoirMode,
-                    ]
-                );
-                $avoirUtilise = (int) ($avoirResult['wallet_debite'] ?? 0);
-
-                $payable = $requestedAmount !== null
-                    ? max(0.0, (float) $requestedAmount - (float) $avoirUtilise)
-                    : null;
-                $freshClientProfile = User::with('creditProfile')->find($client->id)?->creditProfile;
-            }
-
-            if ($payable !== null && $payable <= 0.01) {
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Paiement effectué via votre avoir créance.',
-                    'data' => [
-                        'batch_key' => $batchKey,
-                        'avoir_montant' => $avoirUtilise,
-                        'credit_profile' => $freshClientProfile,
-                    ],
-                ], 201);
-            }
-
-            $avoirPotentiel = (int) round(max(0.0, $excess));
-            $submissionNotes = $this->appendPotentialExcessNote(
-                (string) ($data['notes'] ?? ''),
-                (float) ($requestedAmount ?? $totalRestant),
-                (float) ($payable ?? $totalRestant),
-                (float) $avoirPotentiel,
-            );
-
             $result = $this->service->soumettreRemboursTotal(
                 $client,
                 $payable,
                 $request->file('preuve'),
-                $submissionNotes,
+                (string) ($data['notes'] ?? ''),
                 $batchKey,
             );
-
-            $avoir = 0;
 
             // Notifier par email (queue, best effort) qu'un remboursement global a été soumis.
             // Un seul email récapitulatif est envoyé aux admins (évite spam en cas de nombreuses créances).
@@ -951,17 +746,9 @@ class CreanceController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => $avoirPotentiel > 0
-                    ? sprintf(
-                        'Paiement global soumis. Excédent en attente de validation admin : %s',
-                        $this->fmtGnf((float) $avoirPotentiel)
-                    )
-                    : 'Paiement global soumis. En attente de validation admin.',
+                'message' => 'Paiement global soumis. En attente de validation admin.',
                 'data'    => array_merge([
                     'batch_key' => $batchKey,
-                    'avoir_montant' => $avoirUtilise,
-                    'avoir_montant_potentiel' => $avoirPotentiel,
-                    'credit_profile' => $freshClientProfile,
                 ], $result),
             ], 201);
 
@@ -990,7 +777,7 @@ class CreanceController extends Controller
         if ($transactions->isEmpty()) {
             return response()->json([
                 'success' => false,
-                'message' => 'Aucune transaction en attente trouvée pour cette soumission.',
+                'message' => 'Aucune transaction en attente pour cette soumission.',
             ], 404);
         }
 
@@ -1007,21 +794,11 @@ class CreanceController extends Controller
         }
 
         $validatedIds = [];
-        $avoirTotal = 0;
 
         foreach ($transactions as $tx) {
             try {
                 $this->service->validerPaiement($tx, $admin);
                 $validatedIds[] = $tx->id;
-
-                // Calcul excédent: montant - (montant_avant - montant_apres)
-                $freshTx = CreanceTransaction::query()->find($tx->id);
-                if ($freshTx instanceof CreanceTransaction) {
-                    $montantSoumis = (float) $freshTx->montant;
-                    $montantValide = max(0.0, (float) $freshTx->montant_avant - (float) $freshTx->montant_apres);
-                    $avoir = max(0.0, $montantSoumis - $montantValide);
-                    $avoirTotal += (int) round($avoir);
-                }
             } catch (\RuntimeException $e) {
                 return response()->json([
                     'success' => false,
@@ -1055,18 +832,11 @@ class CreanceController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => $avoirTotal > 0
-                ? sprintf(
-                    'Soumission validée. Excédent crédité sur l\'avoir créance : %s',
-                    $this->fmtGnf((float) $avoirTotal)
-                )
-                : 'Soumission validée avec succès.',
-            'avoir_montant' => $avoirTotal,
+            'message' => 'Soumission validée avec succès.',
             'data'    => [
                 'batch_key'       => $idempotencyKey,
                 'validated_count' => count($validatedIds),
                 'validated_ids'   => $validatedIds,
-                'avoir_montant'   => $avoirTotal,
             ],
         ]);
     }

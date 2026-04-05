@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Services\WalletService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -33,7 +34,7 @@ class UsedItemListingController extends Controller
         $status = trim((string) $request->query('status', UsedItemListing::STATUS_ACTIVE));
         $saleType = trim((string) $request->query('sale_type', ''));
         $query = trim((string) $request->query('q', ''));
-        $limit = max(1, min((int) $request->query('limit', 50), 100));
+        $perPage = max(1, min((int) $request->query('per_page', $request->query('limit', 24)), 100));
 
         $items = UsedItemListing::query()
             ->with(['seller:id,display_name,phone'])
@@ -53,11 +54,16 @@ class UsedItemListingController extends Controller
             })
             ->orderByRaw("case when sale_type = 'auction' then 0 else 1 end")
             ->orderByDesc('created_at')
-            ->limit($limit)
-            ->get();
+            ->paginate($perPage)
+            ->withQueryString();
 
         return ApiResponseClass::sendResponse(
-            $items->map(fn (UsedItemListing $item) => $this->serializeListing($item))->values(),
+            [
+                'items' => $items->getCollection()->map(
+                    fn (UsedItemListing $item) => $this->serializeListing($item)
+                )->values(),
+                'meta' => $this->paginationMeta($items),
+            ],
             'Annonces d\'occasion récupérées avec succès'
         );
     }
@@ -68,6 +74,9 @@ class UsedItemListingController extends Controller
         if (!$user) {
             return ApiResponseClass::unauthorized('Utilisateur non authentifié.');
         }
+        /** @var User $user */
+
+        $perPage = max(1, min((int) $request->query('per_page', 20), 100));
 
         $items = UsedItemListing::query()
             ->with(['seller:id,display_name,phone'])
@@ -75,11 +84,16 @@ class UsedItemListingController extends Controller
             ->withMax('bids', 'amount')
             ->where('seller_id', $user->id)
             ->orderByDesc('created_at')
-            ->limit(100)
-            ->get();
+            ->paginate($perPage)
+            ->withQueryString();
 
         return ApiResponseClass::sendResponse(
-            $items->map(fn (UsedItemListing $item) => $this->serializeListing($item))->values(),
+            [
+                'items' => $items->getCollection()->map(
+                    fn (UsedItemListing $item) => $this->serializeListing($item)
+                )->values(),
+                'meta' => $this->paginationMeta($items),
+            ],
             'Vos annonces d\'occasion ont été récupérées avec succès'
         );
     }
@@ -90,6 +104,7 @@ class UsedItemListingController extends Controller
         if (!$user) {
             return ApiResponseClass::unauthorized('Utilisateur non authentifié.');
         }
+        /** @var User $user */
 
         $validated = $request->validated();
 
@@ -455,6 +470,19 @@ class UsedItemListingController extends Controller
     {
         return $listing->moderation_status === UsedItemListing::MODERATION_APPROVED
             || (string) $listing->seller_id === $userId;
+    }
+
+    private function paginationMeta(LengthAwarePaginator $paginator): array
+    {
+        return [
+            'current_page' => $paginator->currentPage(),
+            'last_page' => $paginator->lastPage(),
+            'per_page' => $paginator->perPage(),
+            'total' => $paginator->total(),
+            'from' => $paginator->firstItem(),
+            'to' => $paginator->lastItem(),
+            'has_more_pages' => $paginator->hasMorePages(),
+        ];
     }
 
     private function serializeListing(UsedItemListing $listing): array

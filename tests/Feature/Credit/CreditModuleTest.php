@@ -1047,7 +1047,7 @@ class CreditModuleTest extends TestCase
         });
     }
 
-    public function test_surpaiement_payer_creance_credite_avoir_wallet(): void
+    public function test_surpaiement_payer_creance_est_plafonne_au_restant_sans_credit_wallet(): void
     {
         Mail::fake();
         Queue::fake();
@@ -1070,15 +1070,15 @@ class CreditModuleTest extends TestCase
             ->postJson('/api/v1/creances/' . $creance->id . '/payer', [
                 'montant' => 15000,
                 'type' => 'paiement_partiel',
-                'notes' => 'surpaiement -> avoir',
+                'notes' => 'surpaiement plafonne au restant',
             ]);
 
         $res
             ->assertStatus(201)
             ->assertJsonPath('success', true)
-            ->assertJsonPath('avoir_montant', 5000);
+            ->assertJsonPath('message', 'Paiement soumis. En attente de validation admin.');
 
-        $txId = (string) $res->json('data.id');
+        $txId = (string) $res->json('data.transaction.id');
         $this->assertNotEmpty($txId);
 
         $this->assertDatabaseHas('creance_transactions', [
@@ -1089,23 +1089,12 @@ class CreditModuleTest extends TestCase
             'creance_id' => (string) $creance->id,
         ]);
 
-        $wallet = Wallet::query()->where('user_id', $this->clientPro->id)->first();
-        $this->assertNotNull($wallet);
-        $this->assertEquals(5000, (int) $wallet->cash_available);
-
-        $this->assertDatabaseHas('wallet_transactions', [
-            'wallet_id' => (string) $wallet->id,
+        $this->assertDatabaseMissing('wallets', [
             'user_id' => (string) $this->clientPro->id,
-            'type' => 'credit_note',
-            'amount' => 5000,
-            'reference' => 'credit_note_overpay_creance_tx:' . $txId,
         ]);
-
-        $this->clientPro->refresh();
-        $this->assertEquals(5000, (int) $this->clientPro->solde_portefeuille);
     }
 
-    public function test_surpaiement_payer_total_credite_avoir_wallet(): void
+    public function test_surpaiement_payer_total_est_plafonne_sans_credit_wallet(): void
     {
         Mail::fake();
         Queue::fake();
@@ -1132,32 +1121,21 @@ class CreditModuleTest extends TestCase
             ->withHeader('X-Idempotency-Key', $batchKey)
             ->postJson('/api/v1/mes-creances/payer-total', [
                 'montant' => 30000,
-                'notes' => 'surpaiement payer-total -> avoir',
+                'notes' => 'surpaiement payer-total plafonne',
             ]);
 
         $res
             ->assertStatus(201)
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.batch_key', $batchKey)
-            ->assertJsonPath('data.avoir_montant', 5000);
+            ->assertJsonPath('message', 'Paiement global soumis. En attente de validation admin.');
 
-        $wallet = Wallet::query()->where('user_id', $this->clientPro->id)->first();
-        $this->assertNotNull($wallet);
-        $this->assertEquals(5000, (int) $wallet->cash_available);
-
-        $this->assertDatabaseHas('wallet_transactions', [
-            'wallet_id' => (string) $wallet->id,
+        $this->assertDatabaseMissing('wallets', [
             'user_id' => (string) $this->clientPro->id,
-            'type' => 'credit_note',
-            'amount' => 5000,
-            'reference' => 'credit_note_overpay_creance_batch:' . $batchKey,
         ]);
-
-        $this->clientPro->refresh();
-        $this->assertEquals(5000, (int) $this->clientPro->solde_portefeuille);
     }
 
-    public function test_admin_peut_valider_transaction_surpaiement_en_creditant_avoir(): void
+    public function test_admin_peut_valider_transaction_surpaiement_sans_credit_wallet(): void
     {
         Mail::fake();
         Queue::fake();
@@ -1221,20 +1199,9 @@ class CreditModuleTest extends TestCase
         $this->assertEquals('payee', (string) $creance->statut);
         $this->assertEquals(0.0, (float) $creance->montant_restant);
 
-        $wallet = Wallet::query()->where('user_id', $this->clientPro->id)->first();
-        $this->assertNotNull($wallet);
-        $this->assertEquals(5000, (int) $wallet->cash_available);
-
-        $this->assertDatabaseHas('wallet_transactions', [
-            'wallet_id' => (string) $wallet->id,
+        $this->assertDatabaseMissing('wallets', [
             'user_id' => (string) $this->clientPro->id,
-            'type' => 'credit_note',
-            'amount' => 5000,
-            'reference' => 'credit_note_overpay_creance_tx:' . (string) $tx->id,
         ]);
-
-        $this->clientPro->refresh();
-        $this->assertEquals(5000, (int) $this->clientPro->solde_portefeuille);
     }
 
     public function test_email_reçu_par_admin_ayant_permission_credits_manage_si_aucun_recipient_configure(): void

@@ -52,10 +52,7 @@ class TopupRequestResource extends JsonResource
 
     private function getBalanceTargetLabel(): string
     {
-        return match ($this->balance_target ?? 'wallet_principal') {
-            'avoir_creance' => 'Avoir créance',
-            default => 'Wallet principal',
-        };
+        return 'Wallet principal';
     }
 
     private function getStatusLabel(): string

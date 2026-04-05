@@ -93,26 +93,6 @@ class TopupRequestController extends Controller
             //     );
             // }
 
-            $balanceTarget = $request->input('balance_target', 'wallet_principal');
-
-            if ($balanceTarget === 'avoir_creance') {
-                $hasUnpaidCreances = Creance::query()
-                    ->where('user_id', $request->input('pro_id'))
-                    ->where('montant_restant', '>', 0)
-                    ->whereNotIn('statut', ['payee', 'annulee'])
-                    ->exists();
-
-                if ($hasUnpaidCreances) {
-                    DB::rollBack();
-
-                    return ApiResponseClass::sendError(
-                        'Recharge d\'avoir indisponible',
-                        ['message' => 'Vous devez d\'abord solder vos créances impayées avant de demander une recharge d\'avoir.'],
-                        Response::HTTP_UNPROCESSABLE_ENTITY
-                    );
-                }
-            }
-
             $topupRequest = $this->topupRequestRepository->create($request->all());
 
             DB::commit();

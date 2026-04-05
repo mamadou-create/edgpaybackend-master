@@ -140,6 +140,10 @@ class ChatbotService
             'DEPOSIT' => $this->handleDeposit($user, $entities),
             'WITHDRAW' => $this->handleWithdraw($user, $entities),
             'TROC_PHONE' => $this->handleTrocPhone($user),
+            'ANNOUNCEMENTS_FEED' => $this->handleAnnouncementsFeed($user),
+            'CREATE_ANNOUNCEMENT' => $this->handleAnnouncementPublish($user),
+            'OCCASION_MARKET' => $this->handleOccasionMarket($user),
+            'OCCASION_PUBLISH' => $this->handleOccasionPublish($user),
             'ACCOUNT_INFO' => $this->handleAccountInfo($user),
             'SUPPORT_HELP' => $this->handleSupport($user, $message, 'user_requested_support'),
             'SECURITY_HELP' => $this->handleSecurityHelp($user),
@@ -154,7 +158,7 @@ class ChatbotService
 
         return $this->buildResponse(
             reply: sprintf(
-                '%s %s. Agent actif: %s. Je peux vous aider rapidement avec votre solde, un transfert, votre historique, un dépôt, un retrait ou vos factures EDG.',
+                '%s %s. Agent actif: %s. Je peux vous aider rapidement avec votre solde, un transfert, votre historique, un dépôt, un retrait, les annonces et le marché occasion.',
                 $this->timeBasedGreeting(),
                 $user->display_name,
                 $this->currentAgentLabel(),
@@ -173,7 +177,7 @@ class ChatbotService
         $this->clearState($user);
 
         return $this->buildResponse(
-            reply: "Voici ce que je peux faire pour vous :\n- consulter votre solde\n- envoyer de l'argent\n- montrer l'historique récent\n- lancer un dépôt ou un retrait\n- ouvrir le paiement EDG\n- vous orienter vers le support si nécessaire",
+            reply: "Voici ce que je peux faire pour vous :\n- consulter votre solde\n- envoyer de l'argent\n- montrer l'historique récent\n- lancer un dépôt ou un retrait\n- ouvrir le paiement EDG\n- ouvrir les annonces classiques\n- ouvrir le marché occasion et la publication\n- vous orienter vers le support si nécessaire",
             intent: 'HELP',
             buttons: $this->defaultButtons($user),
             metadata: $this->buildPersonalizedMetadata($user, [
@@ -1009,6 +1013,111 @@ class ChatbotService
         );
     }
 
+    private function handleAnnouncementsFeed(User $user): array
+    {
+        $this->clearState($user);
+
+        return $this->buildResponse(
+            reply: 'Je peux ouvrir le flux Annonces pour consulter les publications classiques disponibles dans EdgPay.',
+            intent: 'ANNOUNCEMENTS_FEED',
+            buttons: $this->mergeButtons(
+                [
+                    $this->button('Annonces'),
+                    $this->button('Publier annonce'),
+                ],
+                $this->defaultButtons($user),
+            ),
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'action' => 'open_announcements_feed',
+                'knowledge_topic' => 'announcements',
+            ]),
+        );
+    }
+
+    private function handleAnnouncementPublish(User $user): array
+    {
+        $this->clearState($user);
+
+        if (!in_array($this->roleSlug($user), ['client', 'super_admin'], true)) {
+            return $this->buildResponse(
+                reply: 'La publication d\'annonces classiques via NIMBA est réservée aux comptes client et super admin.',
+                intent: 'CREATE_ANNOUNCEMENT',
+                buttons: $this->mergeButtons([
+                    $this->button('Annonces'),
+                    $this->button('Support client'),
+                ], $this->defaultButtons($user)),
+                metadata: $this->buildPersonalizedMetadata($user, [
+                    'announcement_publish_supported' => false,
+                    'role' => $this->roleSlug($user),
+                ]),
+            );
+        }
+
+        return $this->buildResponse(
+            reply: 'Je peux ouvrir le formulaire de publication d\'annonce classique pour créer une nouvelle publication.',
+            intent: 'CREATE_ANNOUNCEMENT',
+            buttons: $this->mergeButtons([
+                $this->button('Publier annonce'),
+                $this->button('Annonces'),
+            ], $this->defaultButtons($user)),
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'action' => 'open_announcement_publish_flow',
+                'knowledge_topic' => 'announcements',
+            ]),
+        );
+    }
+
+    private function handleOccasionMarket(User $user): array
+    {
+        $this->clearState($user);
+
+        return $this->buildResponse(
+            reply: 'Je peux ouvrir le Marché occasion & enchères pour parcourir les articles disponibles et suivre les ventes.',
+            intent: 'OCCASION_MARKET',
+            buttons: $this->mergeButtons([
+                $this->button('Marché occasion'),
+                $this->button('Publier occasion'),
+            ], $this->defaultButtons($user)),
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'action' => 'open_occasion_market_flow',
+                'knowledge_topic' => 'occasion',
+            ]),
+        );
+    }
+
+    private function handleOccasionPublish(User $user): array
+    {
+        $this->clearState($user);
+
+        if ($this->roleSlug($user) !== 'client') {
+            return $this->buildResponse(
+                reply: 'La publication d\'annonces occasion via NIMBA est réservée aux comptes client.',
+                intent: 'OCCASION_PUBLISH',
+                buttons: $this->mergeButtons([
+                    $this->button('Marché occasion'),
+                    $this->button('Support client'),
+                ], $this->defaultButtons($user)),
+                metadata: $this->buildPersonalizedMetadata($user, [
+                    'occasion_publish_supported' => false,
+                    'role' => $this->roleSlug($user),
+                ]),
+            );
+        }
+
+        return $this->buildResponse(
+            reply: 'Je peux ouvrir la publication d\'occasion pour ajouter un article à vendre ou à mettre aux enchères.',
+            intent: 'OCCASION_PUBLISH',
+            buttons: $this->mergeButtons([
+                $this->button('Publier occasion'),
+                $this->button('Marché occasion'),
+            ], $this->defaultButtons($user)),
+            metadata: $this->buildPersonalizedMetadata($user, [
+                'action' => 'open_occasion_publish_flow',
+                'knowledge_topic' => 'occasion',
+            ]),
+        );
+    }
+
     private function handleSupport(
         User $user,
         string $message,
@@ -1255,6 +1364,22 @@ class ChatbotService
 
         if ($this->matchesConfiguredIntent($normalized, 'troc_phone')) {
             return 'TROC_PHONE';
+        }
+
+        if ($this->matchesConfiguredIntent($normalized, 'announcements_feed')) {
+            return 'ANNOUNCEMENTS_FEED';
+        }
+
+        if ($this->matchesConfiguredIntent($normalized, 'create_announcement')) {
+            return 'CREATE_ANNOUNCEMENT';
+        }
+
+        if ($this->matchesConfiguredIntent($normalized, 'occasion_market')) {
+            return 'OCCASION_MARKET';
+        }
+
+        if ($this->matchesConfiguredIntent($normalized, 'occasion_publish')) {
+            return 'OCCASION_PUBLISH';
         }
 
         if ($this->matchesConfiguredIntent($normalized, 'account_info')) {
@@ -1559,6 +1684,10 @@ class ChatbotService
                 $this->button('Dépôt'),
                 $this->button('Retrait'),
                 $this->button('Échanger mon téléphone'),
+                $this->button('Annonces'),
+                $this->button('Publier annonce'),
+                $this->button('Marché occasion'),
+                $this->button('Publier occasion'),
                 $this->button('Support client'),
             ],
             $user ? $this->billButtons($user) : [],
@@ -1705,6 +1834,16 @@ class ChatbotService
             $suggestions[] = $this->button('Comment fonctionne le service ?');
         }
 
+        if ($this->matchesAny($normalized, ['annonce', 'annonces', 'publication'])) {
+            $suggestions[] = $this->button('Annonces');
+            $suggestions[] = $this->button('Publier annonce');
+        }
+
+        if ($this->matchesAny($normalized, ['occasion', 'enchere', 'encheres', 'marche'])) {
+            $suggestions[] = $this->button('Marché occasion');
+            $suggestions[] = $this->button('Publier occasion');
+        }
+
         $suggestions[] = $this->button('Aide');
 
         return $this->mergeButtons(
@@ -1738,12 +1877,20 @@ class ChatbotService
             return 'Essayez par exemple : Comment fonctionne le service ?';
         }
 
+        if ($this->matchesAny($normalized, ['annonce', 'annonces', 'publication'])) {
+            return 'Essayez par exemple : Ouvre les annonces ou Publier annonce.';
+        }
+
+        if ($this->matchesAny($normalized, ['occasion', 'enchere', 'encheres', 'marche'])) {
+            return 'Essayez par exemple : Marché occasion ou Publier occasion.';
+        }
+
         return 'Vous pouvez aussi me dire simplement : aide.';
     }
 
     private function buildCapabilitySummary(User $user): array
     {
-        $items = ['solde', 'transfert', 'historique', 'depot', 'retrait', 'support', 'frais'];
+        $items = ['solde', 'transfert', 'historique', 'depot', 'retrait', 'support', 'frais', 'annonces', 'marche occasion'];
 
         if ($this->supportsBillPayments($user)) {
             $items[] = 'factures EDG';
