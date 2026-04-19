@@ -10,6 +10,7 @@ use App\Interfaces\CommissionRepositoryInterface;
 use App\Models\UsedItemBid;
 use App\Models\UsedItemListing;
 use App\Models\User;
+use App\Support\PublicMediaUrl;
 use App\Services\WalletService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -115,9 +116,15 @@ class UsedItemListingController extends Controller
         /** @var User $user */
 
         $validated = $request->validated();
+        $normalizedImageUrls = PublicMediaUrl::normalizeMany($validated['image_urls'] ?? []);
+        $storedImageUrls = array_map(
+            static fn (string $url) => PublicMediaUrl::toStoredValue($url) ?? $url,
+            $normalizedImageUrls
+        );
+        $storedPrimaryImageUrl = PublicMediaUrl::toStoredValue($validated['image_url'] ?? null);
 
         try {
-            $result = DB::transaction(function () use ($user, $validated) {
+            $result = DB::transaction(function () use ($user, $validated, $storedImageUrls, $storedPrimaryImageUrl) {
                 $saleType = (string) $validated['sale_type'];
                 $feeRate = $this->resolvePublicationFeeRate();
                 $baseAmount = $this->resolvePublicationFeeBaseAmount($saleType, $validated);
@@ -155,8 +162,8 @@ class UsedItemListingController extends Controller
                     'starting_bid' => $saleType === UsedItemListing::SALE_TYPE_AUCTION ? (float) ($validated['starting_bid'] ?? 0) : null,
                     'reserve_price' => $saleType === UsedItemListing::SALE_TYPE_AUCTION ? (float) ($validated['reserve_price'] ?? 0) : null,
                     'auction_ends_at' => $saleType === UsedItemListing::SALE_TYPE_AUCTION ? ($validated['auction_ends_at'] ?? null) : null,
-                    'image_url' => ($validated['image_urls'][0] ?? ($validated['image_url'] ?? null)),
-                    'image_urls' => array_values($validated['image_urls'] ?? []),
+                    'image_url' => ($storedImageUrls[0] ?? $storedPrimaryImageUrl),
+                    'image_urls' => $storedImageUrls,
                     'publication_fee_rate' => $feeRate,
                     'publication_fee_base_amount' => $baseAmount,
                     'publication_fee_amount' => $feeAmount,
@@ -222,7 +229,7 @@ class UsedItemListingController extends Controller
         ]);
 
         $path = Storage::disk('public')->putFile('occasions', $validated['image']);
-        $publicUrl = asset('storage/' . $path);
+        $publicUrl = PublicMediaUrl::normalize(PublicMediaUrl::fromStoragePath($path));
 
         return ApiResponseClass::created([
             'path' => $path,
@@ -531,8 +538,8 @@ class UsedItemListingController extends Controller
             'starting_bid' => $listing->starting_bid,
             'reserve_price' => $listing->reserve_price,
             'auction_ends_at' => $listing->auction_ends_at?->toIso8601String(),
-            'image_url' => $listing->image_url,
-            'image_urls' => array_values($listing->image_urls ?? array_filter([$listing->image_url])),
+            'image_url' => PublicMediaUrl::normalize($listing->image_url),
+            'image_urls' => PublicMediaUrl::normalizeMany($listing->image_urls ?? array_filter([$listing->image_url])),
             'publication_fee_rate' => (float) ($listing->publication_fee_rate ?? 0),
             'publication_fee_base_amount' => (float) ($listing->publication_fee_base_amount ?? 0),
             'publication_fee_amount' => (float) ($listing->publication_fee_amount ?? 0),

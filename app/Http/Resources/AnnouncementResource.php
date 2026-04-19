@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Models\Announcement;
+use App\Support\PublicMediaUrl;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Carbon\Carbon;
@@ -60,7 +61,7 @@ class AnnouncementResource extends JsonResource
             'title' => $this->title,
             'category' => $this->category ?? Announcement::CATEGORY_OTHER,
             'message' => $this->message,
-            'media_url' => $this->media_url,
+            'media_url' => PublicMediaUrl::normalize($this->media_url),
             'media_type' => $this->media_type,
             'media_name' => $this->media_name,
             'moderation_status' => $this->moderation_status ?? Announcement::MODERATION_APPROVED,

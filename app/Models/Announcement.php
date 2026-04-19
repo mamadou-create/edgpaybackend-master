@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\PublicMediaUrl;
 use App\Traits\TraitUuid;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -194,7 +195,7 @@ class Announcement extends Model
             'title' => $this->title,
             'category' => $this->category ?? self::CATEGORY_OTHER,
             'message' => $this->message,
-            'media_url' => $this->media_url,
+            'media_url' => PublicMediaUrl::normalize($this->media_url),
             'media_type' => $this->media_type,
             'media_name' => $this->media_name,
             'moderation_status' => $this->moderation_status ?? self::MODERATION_APPROVED,

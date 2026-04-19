@@ -13,6 +13,7 @@ use App\Interfaces\SystemSettingRepositoryInterface;
 use App\Models\Announcement;
 use App\Models\AnnouncementComment;
 use App\Models\User;
+use App\Support\PublicMediaUrl;
 use App\Services\WalletService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -187,7 +188,7 @@ class AnnouncementController extends Controller
 
                 if ($media !== null) {
                     $storedMediaPath = Storage::disk('public')->putFile('announcements', $media);
-                    $data['media_url'] = asset('storage/' . $storedMediaPath);
+                    $data['media_url'] = PublicMediaUrl::fromStoragePath($storedMediaPath);
                     $data['media_type'] = $media->getMimeType();
                     $data['media_name'] = $media->getClientOriginalName();
                 }
