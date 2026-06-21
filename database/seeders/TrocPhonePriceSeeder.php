@@ -70,6 +70,72 @@ class TrocPhonePriceSeeder extends Seeder
             ['model' => 'iPhone 16 Pro', 'storage' => '512GB', 'base_price' => 1170],
             ['model' => 'iPhone 16 Pro Max', 'storage' => '256GB', 'base_price' => 1220],
             ['model' => 'iPhone 16 Pro Max', 'storage' => '512GB', 'base_price' => 1320],
+            
+            // Samsung Galaxy S Series
+            ['model' => 'Samsung Galaxy S20', 'storage' => '128GB', 'base_price' => 220],
+            ['model' => 'Samsung Galaxy S20', 'storage' => '256GB', 'base_price' => 250],
+            ['model' => 'Samsung Galaxy S21', 'storage' => '128GB', 'base_price' => 250],
+            ['model' => 'Samsung Galaxy S21', 'storage' => '256GB', 'base_price' => 290],
+            ['model' => 'Samsung Galaxy S22', 'storage' => '128GB', 'base_price' => 280],
+            ['model' => 'Samsung Galaxy S22', 'storage' => '256GB', 'base_price' => 320],
+            ['model' => 'Samsung Galaxy S23', 'storage' => '128GB', 'base_price' => 350],
+            ['model' => 'Samsung Galaxy S23', 'storage' => '256GB', 'base_price' => 400],
+            ['model' => 'Samsung Galaxy S24', 'storage' => '128GB', 'base_price' => 450],
+            ['model' => 'Samsung Galaxy S24', 'storage' => '256GB', 'base_price' => 510],
+            ['model' => 'Samsung Galaxy S24 Ultra', 'storage' => '256GB', 'base_price' => 750],
+            ['model' => 'Samsung Galaxy S24 Ultra', 'storage' => '512GB', 'base_price' => 850],
+            ['model' => 'Samsung Galaxy A50', 'storage' => '128GB', 'base_price' => 130],
+            ['model' => 'Samsung Galaxy A51', 'storage' => '128GB', 'base_price' => 150],
+            ['model' => 'Samsung Galaxy A52', 'storage' => '128GB', 'base_price' => 170],
+            ['model' => 'Samsung Galaxy A53', 'storage' => '128GB', 'base_price' => 200],
+            
+            // Xiaomi Redmi
+            ['model' => 'Xiaomi Redmi Note 10', 'storage' => '128GB', 'base_price' => 140],
+            ['model' => 'Xiaomi Redmi Note 11', 'storage' => '128GB', 'base_price' => 160],
+            ['model' => 'Xiaomi Redmi Note 12', 'storage' => '128GB', 'base_price' => 190],
+            ['model' => 'Xiaomi Redmi Note 13', 'storage' => '128GB', 'base_price' => 220],
+            ['model' => 'Xiaomi 13', 'storage' => '256GB', 'base_price' => 380],
+            ['model' => 'Xiaomi 14', 'storage' => '256GB', 'base_price' => 420],
+            
+            // Huawei
+            ['model' => 'Huawei P40', 'storage' => '128GB', 'base_price' => 280],
+            ['model' => 'Huawei P40', 'storage' => '256GB', 'base_price' => 320],
+            ['model' => 'Huawei P50', 'storage' => '128GB', 'base_price' => 350],
+            ['model' => 'Huawei P50', 'storage' => '256GB', 'base_price' => 400],
+            ['model' => 'Huawei Mate 50', 'storage' => '256GB', 'base_price' => 480],
+            
+            // OnePlus
+            ['model' => 'OnePlus 9', 'storage' => '128GB', 'base_price' => 190],
+            ['model' => 'OnePlus 9', 'storage' => '256GB', 'base_price' => 220],
+            ['model' => 'OnePlus 10', 'storage' => '128GB', 'base_price' => 240],
+            ['model' => 'OnePlus 10', 'storage' => '256GB', 'base_price' => 280],
+            ['model' => 'OnePlus 12', 'storage' => '256GB', 'base_price' => 420],
+            
+            // Google Pixel
+            ['model' => 'Google Pixel 6', 'storage' => '128GB', 'base_price' => 180],
+            ['model' => 'Google Pixel 7', 'storage' => '128GB', 'base_price' => 240],
+            ['model' => 'Google Pixel 8', 'storage' => '128GB', 'base_price' => 350],
+            ['model' => 'Google Pixel 8 Pro', 'storage' => '128GB', 'base_price' => 450],
+            
+            // Realme
+            ['model' => 'Realme 8', 'storage' => '128GB', 'base_price' => 110],
+            ['model' => 'Realme 9', 'storage' => '128GB', 'base_price' => 130],
+            ['model' => 'Realme 10', 'storage' => '128GB', 'base_price' => 150],
+            ['model' => 'Realme GT', 'storage' => '128GB', 'base_price' => 280],
+            
+            // Motorola
+            ['model' => 'Motorola G20', 'storage' => '64GB', 'base_price' => 90],
+            ['model' => 'Motorola G30', 'storage' => '128GB', 'base_price' => 110],
+            ['model' => 'Motorola G40', 'storage' => '128GB', 'base_price' => 140],
+            ['model' => 'Motorola Edge 20', 'storage' => '128GB', 'base_price' => 220],
+            
+            // Honor
+            ['model' => 'Honor 50', 'storage' => '256GB', 'base_price' => 320],
+            ['model' => 'Honor 70', 'storage' => '256GB', 'base_price' => 420],
+            
+            // Nothing
+            ['model' => 'Nothing Phone 1', 'storage' => '128GB', 'base_price' => 280],
+            ['model' => 'Nothing Phone 2', 'storage' => '128GB', 'base_price' => 350],
         ];
 
         foreach ($prices as $price) {

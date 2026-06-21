@@ -9,6 +9,7 @@ use App\Models\TrocRequest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 
 class TrocController extends Controller
 {
@@ -52,7 +53,12 @@ class TrocController extends Controller
             imageAnalysis: is_array($validated['image_analysis'] ?? null) ? $validated['image_analysis'] : [],
         );
 
-        $estimatedPrice = max(0, round((float) $price->base_price - $deductions['total'], 2));
+        $pricing = $this->applyPricingPolicy(
+            basePrice: (float) $price->base_price,
+            deductionTotal: (float) $deductions['total'],
+        );
+
+        $estimatedPrice = $pricing['estimated_price'];
         $convertedBasePrice = $this->convertReferencePriceToGnf((float) $price->base_price);
         $convertedEstimatedPrice = $this->convertReferencePriceToGnf($estimatedPrice);
         $convertedTotalDeduction = $this->convertReferencePriceToGnf($deductions['total']);
@@ -68,6 +74,17 @@ class TrocController extends Controller
             'image_analysis' => $deductions['image_analysis'],
             'deductions' => $this->convertDeductionItemsToGnf($deductions['items']),
             'total_deduction' => $convertedTotalDeduction,
+            'pricing_policy' => [
+                'base_minus_deductions' => $this->convertReferencePriceToGnf($pricing['base_minus_deductions']),
+                'max_profitable_buyback' => $this->convertReferencePriceToGnf($pricing['max_profitable_buyback']),
+                'buyback_floor' => $this->convertReferencePriceToGnf($pricing['buyback_floor']),
+                'resale_price' => $this->convertReferencePriceToGnf($pricing['resale_price']),
+                'operational_cost' => $this->convertReferencePriceToGnf($pricing['operational_cost']),
+                'required_margin' => $this->convertReferencePriceToGnf($pricing['required_margin']),
+                'is_profitable' => $pricing['is_profitable'],
+                'is_floor_limited' => $pricing['is_floor_limited'],
+                'currency' => config('troc.display_currency', 'GNF'),
+            ],
             'currency' => config('troc.display_currency', 'GNF'),
             'next_questions' => $deductions['next_questions'],
         ], 'Estimation Troc calculée avec succès');
@@ -205,6 +222,42 @@ class TrocController extends Controller
     private function formatGnf(float $amount): string
     {
         return number_format(round($amount, 0), 0, '.', ' ') . ' ' . config('troc.display_currency', 'GNF');
+    }
+
+    private function applyPricingPolicy(float $basePrice, float $deductionTotal): array
+    {
+        $rawOffer = max(0.0, round($basePrice - $deductionTotal, 2));
+
+        $resaleFactor = max(0.1, (float) config('troc.pricing.resale_factor', 1.0));
+        $operationalCostPercent = max(0.0, (float) config('troc.pricing.operational_cost_percent', 0.05));
+        $minMarginPercent = max(0.0, (float) config('troc.pricing.min_margin_percent', 0.10));
+        $minMarginFixed = max(0.0, (float) config('troc.pricing.min_margin_fixed', 8.0));
+        $buybackFloorPercent = max(0.0, min(1.0, (float) config('troc.pricing.buyback_floor_percent', 0.35)));
+
+        $resalePrice = round($basePrice * $resaleFactor, 2);
+        $operationalCost = round($resalePrice * $operationalCostPercent, 2);
+        $requiredMargin = round(max($resalePrice * $minMarginPercent, $minMarginFixed), 2);
+
+        // Offre maximale qui reste rentable apres reconditionnement + frais + marge minimale.
+        $maxProfitableBuyback = max(0.0, round($resalePrice - $deductionTotal - $operationalCost - $requiredMargin, 2));
+        $policyOffer = min($rawOffer, $maxProfitableBuyback);
+
+        // Plancher commercial: si la reprise est trop basse, on evite de descendre sous ce seuil.
+        // La valeur finale reste bornee par la rentabilite pour ne pas vendre a perte.
+        $buybackFloor = round($basePrice * $buybackFloorPercent, 2);
+        $estimated = max(0.0, round(max($policyOffer, min($buybackFloor, $maxProfitableBuyback)), 2));
+
+        return [
+            'estimated_price' => $estimated,
+            'base_minus_deductions' => $rawOffer,
+            'max_profitable_buyback' => $maxProfitableBuyback,
+            'buyback_floor' => $buybackFloor,
+            'resale_price' => $resalePrice,
+            'operational_cost' => $operationalCost,
+            'required_margin' => $requiredMargin,
+            'is_profitable' => $maxProfitableBuyback > 0,
+            'is_floor_limited' => $estimated > $policyOffer,
+        ];
     }
 
     private function computeDeductions(
@@ -372,12 +425,59 @@ class TrocController extends Controller
         $normalizedModel = $this->normalize($model);
         $normalizedStorage = $this->normalize($storage);
 
-        return TrocPhonePrice::query()
-            ->get()
-            ->first(function (TrocPhonePrice $price) use ($normalizedModel, $normalizedStorage): bool {
-                return $this->normalize((string) $price->model) === $normalizedModel
-                    && $this->normalize((string) $price->storage) === $normalizedStorage;
-            });
+        // 1) Recherche exacte (normalisation SQL pour eviter de charger toute la table)
+        $exactMatch = TrocPhonePrice::query()
+            ->whereRaw("LOWER(REPLACE(model, ' ', '')) = ?", [$normalizedModel])
+            ->whereRaw("LOWER(REPLACE(storage, ' ', '')) = ?", [$normalizedStorage])
+            ->first();
+
+        if ($exactMatch !== null) {
+            return $exactMatch;
+        }
+
+        Log::info('troc.price_search.exact_not_found', [
+            'model' => $model,
+            'storage' => $storage,
+        ]);
+
+        // 2) Fallback: meme modele, capacite differente (ordre: 128GB > 256GB > 512GB > 64GB > 1TB)
+        $modelOnlyCandidates = TrocPhonePrice::query()
+            ->whereRaw("LOWER(REPLACE(model, ' ', '')) = ?", [$normalizedModel])
+            ->get();
+
+        if ($modelOnlyCandidates->isNotEmpty()) {
+            $storagePreference = ['128gb', '256gb', '512gb', '64gb', '1tb'];
+            foreach ($storagePreference as $preferred) {
+                $candidate = $modelOnlyCandidates->first(function (TrocPhonePrice $price) use ($preferred): bool {
+                    return $this->normalize((string) $price->storage) === $preferred;
+                });
+                if ($candidate !== null) {
+                    Log::info('troc.price_search.model_match_fallback', [
+                        'model' => $model,
+                        'requested_storage' => $storage,
+                        'matched_storage' => $candidate->storage,
+                    ]);
+                    return $candidate;
+                }
+            }
+            $fallback = $modelOnlyCandidates->first();
+            Log::info('troc.price_search.model_match_fallback', [
+                'model' => $model,
+                'requested_storage' => $storage,
+                'matched_storage' => $fallback->storage,
+            ]);
+            return $fallback;
+        }
+
+        Log::warning('troc.price_search.not_found', [
+            'model' => $model,
+            'storage' => $storage,
+            'normalized_model' => $normalizedModel,
+            'normalized_storage' => $normalizedStorage,
+            'available_count' => TrocPhonePrice::query()->count(),
+        ]);
+
+        return null;
     }
 
     private function serializeCatalogItem(TrocPhonePrice $item): array

@@ -81,6 +81,15 @@ Route::prefix('v1')->group(function () {
         Route::get('transactions/history', [WhatsAppFintechController::class, 'history']);
         Route::post('support/create', [WhatsAppFintechController::class, 'support']);
     });
+
+    // ──────────────────────────────────────
+    // Routes publiques pour Troc
+    // ──────────────────────────────────────
+    Route::prefix('troc')->group(function () {
+        Route::get('/catalog', [TrocController::class, 'catalog']);
+        Route::post('/evaluate', [TrocController::class, 'evaluate']);
+        Route::post('/trade', [TrocController::class, 'trade']);
+    });
 });
 
 // ----------------------
@@ -277,14 +286,14 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
         Route::get('/financial', [FinancialReportController::class, 'index']);
     });
 
+    // ──────────────────────────────────────
+    // Routes protégées pour Troc
+    // ──────────────────────────────────────
     Route::prefix('troc')->group(function () {
-        Route::get('/catalog', [TrocController::class, 'catalog']);
         Route::get('/notifications', [TrocNotificationController::class, 'index']);
         Route::put('/notifications/read-all', [TrocNotificationController::class, 'markAllAsRead']);
         Route::put('/notifications/{notificationId}/read', [TrocNotificationController::class, 'markAsRead']);
         Route::get('/requests', [TrocController::class, 'myRequests']);
-        Route::post('/evaluate', [TrocController::class, 'evaluate']);
-        Route::post('/trade', [TrocController::class, 'trade']);
         Route::post('/upload', [TrocImageController::class, 'store']);
         Route::post('/requests', [TrocController::class, 'storeRequest']);
 
