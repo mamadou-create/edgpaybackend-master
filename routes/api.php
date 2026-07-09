@@ -17,8 +17,11 @@ use App\Http\Controllers\API\DmlController;
 use App\Http\Controllers\API\DjomyController;
 use App\Http\Controllers\API\MessageController;
 use App\Http\Controllers\API\PaymentController;
+use App\Http\Controllers\API\PaymentOpsController;
+use App\Http\Controllers\API\PaymentOrchestrationController;
 use App\Http\Controllers\API\PaymentLinkController;
 use App\Http\Controllers\API\RoleController;
+use App\Http\Controllers\API\ReloadlyController;
 use App\Http\Controllers\API\SmsController;
 use App\Http\Controllers\API\SystemSettingController;
 use App\Http\Controllers\API\TopupRequestController;
@@ -29,6 +32,9 @@ use App\Http\Controllers\Troc\TrocController;
 use App\Http\Controllers\Troc\TrocAdminController;
 use App\Http\Controllers\Troc\TrocImageController;
 use App\Http\Controllers\Troc\TrocNotificationController;
+use App\Http\Controllers\Troc\TrocCarController;
+use App\Http\Controllers\Troc\TrocCarAdminController;
+use App\Http\Controllers\Troc\TrocCarNotificationController;
 use App\Http\Controllers\API\WhatsAppFintechController;
 use App\Http\Controllers\API\WhatsAppWebhookController;
 use App\Http\Controllers\API\WalletController;
@@ -58,6 +64,8 @@ Route::prefix('v1')->group(function () {
     Route::get('webhook/whatsapp', [WhatsAppWebhookController::class, 'verify']);
     Route::post('webhook/whatsapp', [WhatsAppWebhookController::class, 'receive']);
     Route::post('client/token', [ApiClientController::class, 'tokenClient']);
+    Route::post('webhook/payments/{provider}', [PaymentOrchestrationController::class, 'paymentWebhook'])
+        ->middleware(['throttle:120,1']);
     // Route::post('client/token', [ApiClientController::class, 'token']);
     // Public: maintenance status (used by mobile/web app before login)
     Route::get('maintenance', [SystemSettingController::class, 'maintenanceStatus']);
@@ -90,12 +98,51 @@ Route::prefix('v1')->group(function () {
         Route::post('/evaluate', [TrocController::class, 'evaluate']);
         Route::post('/trade', [TrocController::class, 'trade']);
     });
+
+    Route::prefix('troc-car')->group(function () {
+        Route::get('/catalog', [TrocCarController::class, 'catalog']);
+        Route::post('/evaluate', [TrocCarController::class, 'evaluate']);
+        Route::post('/trade', [TrocCarController::class, 'trade']);
+    });
 });
 
 // ----------------------
 // Routes protégées par JWT
 // ----------------------
 Route::prefix('v1')->middleware('auth:api')->group(function () {
+    Route::prefix('ops/payments')->middleware(['check-permission:credits.manage'])->group(function () {
+        Route::get('/health', [PaymentOpsController::class, 'health']);
+        Route::get('/logs', [PaymentOpsController::class, 'logs'])
+            ->middleware(['throttle:30,1']);
+        Route::get('/logs/{id}', [PaymentOpsController::class, 'logDetails'])
+            ->middleware(['throttle:30,1']);
+        Route::get('/failures', [PaymentOpsController::class, 'failures']);
+        Route::get('/failures/export', [PaymentOpsController::class, 'exportFailuresCsv'])
+            ->middleware(['throttle:20,1']);
+        Route::post('/replay/{paymentTransactionId}', [PaymentOpsController::class, 'replay'])
+            ->middleware(['idempotency:ops-replay,120', 'throttle:30,1']);
+        Route::post('/replay-batch', [PaymentOpsController::class, 'replayBatch'])
+            ->middleware(['idempotency:ops-replay-batch,120', 'throttle:10,1']);
+    });
+
+    Route::prefix('purchase')->group(function () {
+        Route::post('/airtime/intent', [PaymentOrchestrationController::class, 'createAirtimeIntent'])
+            ->middleware(['idempotency:purchase-airtime,900', 'throttle:20,1']);
+        Route::post('/data/intent', [PaymentOrchestrationController::class, 'createDataIntent'])
+            ->middleware(['idempotency:purchase-data,900', 'throttle:20,1']);
+    });
+
+    Route::prefix('reloadly')->middleware('throttle:60,1')->group(function () {
+        Route::post('/auth', [ReloadlyController::class, 'authenticate']);
+        Route::post('/operators/detect', [ReloadlyController::class, 'detectOperator']);
+        Route::get('/data/plans', [ReloadlyController::class, 'dataPlans']);
+        Route::get('/promotions', [ReloadlyController::class, 'promotions']);
+        Route::get('/commissions', [ReloadlyController::class, 'commissions']);
+        Route::get('/transactions/{transactionId}', [ReloadlyController::class, 'verifyTransaction']);
+        Route::post('/airtime/topup', [ReloadlyController::class, 'topupAirtime'])
+            ->middleware(['idempotency:reloadly-airtime,900', 'throttle:20,1']);
+    });
+
     // FINTECH (admin): approbation commande avec statut_paiement obligatoire
     Route::post('admin/commandes/{id}/approuver', [TopupRequestController::class, 'approve']);
 
@@ -305,6 +352,24 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
             Route::post('/catalog', [TrocAdminController::class, 'storeCatalog']);
             Route::put('/catalog/{catalogItem}', [TrocAdminController::class, 'updateCatalog']);
             Route::delete('/catalog/{catalogItem}', [TrocAdminController::class, 'destroyCatalog']);
+        });
+    });
+
+    Route::prefix('troc-car')->group(function () {
+        Route::get('/notifications', [TrocCarNotificationController::class, 'index']);
+        Route::put('/notifications/read-all', [TrocCarNotificationController::class, 'markAllAsRead']);
+        Route::put('/notifications/{notificationId}/read', [TrocCarNotificationController::class, 'markAsRead']);
+        Route::get('/requests', [TrocCarController::class, 'myRequests']);
+        Route::post('/requests', [TrocCarController::class, 'storeRequest']);
+
+        Route::prefix('admin')->group(function () {
+            Route::get('/requests', [TrocCarAdminController::class, 'requestsIndex']);
+            Route::patch('/requests/{trocCarRequest}', [TrocCarAdminController::class, 'updateRequest']);
+            Route::put('/requests/{trocCarRequest}', [TrocCarAdminController::class, 'updateRequest']);
+            Route::get('/catalog', [TrocCarAdminController::class, 'catalogIndex']);
+            Route::post('/catalog', [TrocCarAdminController::class, 'storeCatalog']);
+            Route::put('/catalog/{catalogItem}', [TrocCarAdminController::class, 'updateCatalog']);
+            Route::delete('/catalog/{catalogItem}', [TrocCarAdminController::class, 'destroyCatalog']);
         });
     });
 

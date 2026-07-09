@@ -10,6 +10,7 @@ use App\Http\Resources\PaymentCollection;
 use App\Http\Resources\PaymentResource;
 use App\Interfaces\DjomyServiceInterface;
 use App\Interfaces\PaymentRepositoryInterface;
+use App\Models\PaymentTransaction;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -115,7 +116,26 @@ class PaymentController extends Controller
     {
         $payment = $this->paymentRepository->findByIdOrReference($id);
 
-        if (!$payment) {
+        if ($payment) {
+            $statusHistory = $this->paymentRepository->getStatusHistory($payment->id);
+
+            return ApiResponseClass::sendResponse(
+                [
+                    'payment' => new PaymentResource($payment),
+                    'status_history' => $statusHistory,
+                    'raw_data' => [
+                        'request' => $payment->raw_request,
+                        'response' => $payment->raw_response,
+                    ],
+                ],
+                'Détails du paiement récupérés avec succès'
+            );
+        }
+
+        $paymentTx = PaymentTransaction::with(['airtimeOrders', 'dataOrders'])
+            ->find($id);
+
+        if (!$paymentTx) {
             return ApiResponseClass::sendError(
                 'Paiement non trouvé.',
                 [],
@@ -123,15 +143,50 @@ class PaymentController extends Controller
             );
         }
 
-        $statusHistory = $this->paymentRepository->getStatusHistory($payment->id);
+        $order = $paymentTx->airtimeOrders->first() ?? $paymentTx->dataOrders->first();
+
+        $statusHistory = [
+            [
+                'status' => 'PENDING',
+                'created_at' => (string) $paymentTx->created_at,
+                'source' => 'payment_transaction',
+            ],
+        ];
+
+        if ($paymentTx->status === 'CONFIRMED') {
+            $statusHistory[] = [
+                'status' => 'CONFIRMED',
+                'created_at' => (string) ($paymentTx->webhook_verified_at ?? $paymentTx->paid_at ?? $paymentTx->updated_at),
+                'source' => 'webhook',
+            ];
+        }
+
+        if ($order) {
+            $statusHistory[] = [
+                'status' => (string) $order->status,
+                'created_at' => (string) ($order->delivered_at ?? $order->updated_at),
+                'source' => 'reloadly_order',
+            ];
+        }
 
         return ApiResponseClass::sendResponse(
             [
-                'payment' => new PaymentResource($payment),
+                'payment' => [
+                    'id' => $paymentTx->id,
+                    'merchant_payment_reference' => $paymentTx->merchant_reference,
+                    'external_reference' => $paymentTx->payment_reference,
+                    'payment_method' => $paymentTx->channel,
+                    'amount' => $paymentTx->amount,
+                    'currency_code' => $paymentTx->currency,
+                    'status' => $paymentTx->status,
+                    'description' => 'Achat mobile',
+                    'created_at' => $paymentTx->created_at,
+                    'updated_at' => $paymentTx->updated_at,
+                ],
                 'status_history' => $statusHistory,
                 'raw_data' => [
-                    'request' => $payment->raw_request,
-                    'response' => $payment->raw_response,
+                    'request' => $paymentTx->raw_request,
+                    'response' => $paymentTx->raw_response,
                 ],
             ],
             'Détails du paiement récupérés avec succès'

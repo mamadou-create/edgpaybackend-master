@@ -20,6 +20,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         // Middleware global
+        $middleware->append(\App\Http\Middleware\CorrelationIdMiddleware::class);
         $middleware->append(\App\Http\Middleware\Cors::class);
         
         $middleware->alias([
@@ -27,6 +28,8 @@ return Application::configure(basePath: dirname(__DIR__))
             'check-permission'   => \App\Http\Middleware\CheckPermission::class,
             'credit.profile'     => \App\Http\Middleware\CheckCreditProfile::class,
             'anti.replay'        => \App\Http\Middleware\AntiReplayMiddleware::class,
+            'idempotency'        => \App\Http\Middleware\IdempotencyMiddleware::class,
+            'correlation.id'     => \App\Http\Middleware\CorrelationIdMiddleware::class,
         ]);
 
         // Middleware personnalisé si besoin

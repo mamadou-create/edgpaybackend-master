@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Observers\UserObserver;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\URL;
 
@@ -16,6 +17,15 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        $this->app->bind(
+            \App\Interfaces\ReloadlyServiceInterface::class,
+            \App\Services\ReloadlyService::class
+        );
+
+        $this->app->singleton(\App\Services\WebhookSignatureService::class);
+        $this->app->singleton(\App\Services\PaymentOrchestrationService::class);
+        $this->app->singleton(\App\Services\PaymentOpsService::class);
+
         // ─── Services Module Crédit ─────────────────────────────────────────────
         $this->app->singleton(\App\Services\AuditLogService::class);
         $this->app->singleton(\App\Services\FinancialLedgerService::class);
@@ -47,6 +57,11 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        Event::listen(
+            \App\Events\ReloadlyOrderProcessed::class,
+            \App\Listeners\SendReloadlyOrderStatusNotification::class
+        );
+
         // Auto-créer un profil de crédit pour chaque nouvel utilisateur
         User::observe(UserObserver::class);
 

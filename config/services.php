@@ -53,6 +53,30 @@ return [
         'cancel_url' => env('DJOMY_CANCEL_URL'),
     ],
 
+    'reloadly' => [
+        'auth_base_url' => env('RELOADLY_AUTH_BASE_URL', 'https://auth.reloadly.com'),
+        'topups_base_url' => env('RELOADLY_TOPUPS_BASE_URL', 'https://topups.reloadly.com'),
+        'client_id' => env('RELOADLY_CLIENT_ID'),
+        'client_secret' => env('RELOADLY_CLIENT_SECRET'),
+        'audience' => env('RELOADLY_AUDIENCE', 'https://topups.reloadly.com'),
+        'timeout' => (int) env('RELOADLY_TIMEOUT', 15),
+    ],
+
+    'mobile_money' => [
+        'allow_unsigned_local' => filter_var(env('MM_ALLOW_UNSIGNED_LOCAL', false), FILTER_VALIDATE_BOOLEAN),
+        'providers' => [
+            'ORANGE' => [
+                'webhook_secret' => env('ORANGE_MONEY_WEBHOOK_SECRET'),
+            ],
+            'MTN' => [
+                'webhook_secret' => env('MTN_MOMO_WEBHOOK_SECRET'),
+            ],
+            'DJOMY' => [
+                'webhook_secret' => env('DJOMY_WEBHOOK_SECRET'),
+            ],
+        ],
+    ],
+
     'nimba' => [
         'base_url' => env('NIMBA_BASE_URL', 'https://api.nimbasms.com/v1'),
         'basic_auth' => env('NIMBA_BASIC_AUTH'),

@@ -6,9 +6,48 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\MessageBag;
 
 class ApiResponseClass
 {
+    private const DEFAULT_ERROR_CODE = 'GENERIC_ERROR';
+
+    private static function resolveCorrelationId(): string
+    {
+        $request = request();
+
+        $fromAttribute = (string) $request->attributes->get('correlation_id', '');
+        if ($fromAttribute !== '') {
+            return $fromAttribute;
+        }
+
+        $fromHeader = (string) $request->header('X-Correlation-ID', '');
+        if ($fromHeader !== '') {
+            return $fromHeader;
+        }
+
+        return (string) $request->header('X-Request-ID', 'N/A');
+    }
+
+    private static function defaultBusinessCode(int $code): string
+    {
+        return match ($code) {
+            400 => 'BAD_REQUEST',
+            401 => 'UNAUTHENTICATED',
+            403 => 'FORBIDDEN',
+            404 => 'NOT_FOUND',
+            405 => 'METHOD_NOT_ALLOWED',
+            409 => 'CONFLICT',
+            422 => 'VALIDATION_ERROR',
+            429 => 'RATE_LIMITED',
+            500 => 'INTERNAL_SERVER_ERROR',
+            502 => 'BAD_GATEWAY',
+            503 => 'SERVICE_UNAVAILABLE',
+            504 => 'GATEWAY_TIMEOUT',
+            default => self::DEFAULT_ERROR_CODE,
+        };
+    }
+
     /**
      * Rollback d'une transaction et génération d'une erreur
      */
@@ -31,8 +70,12 @@ class ApiResponseClass
         throw new HttpResponseException(
             response()->json([
                 "success" => false,
+                "status_code" => JsonResponse::HTTP_INTERNAL_SERVER_ERROR,
+                "business_code" => 'INTERNAL_SERVER_ERROR',
                 "message" => $message,
-                "errors"  => $e->getMessage()
+                "errors"  => $e->getMessage(),
+                "data" => null,
+                "correlation_id" => self::resolveCorrelationId(),
             ], JsonResponse::HTTP_INTERNAL_SERVER_ERROR)
         );
     }
@@ -44,8 +87,10 @@ class ApiResponseClass
     {
         $response = [
             'success' => true,
+            'status_code' => $code,
             'message' => $message,
-            'data'    => $result
+            'data'    => $result,
+            'correlation_id' => self::resolveCorrelationId(),
         ];
 
         return response()->json(
@@ -59,26 +104,55 @@ class ApiResponseClass
     /**
      * Réponse d'erreur générique
      */
-    public static function sendError(string $message = "Erreur", $errors = null, int $code = JsonResponse::HTTP_BAD_REQUEST): JsonResponse
+    public static function sendError(
+        string $message = "Erreur",
+        $errors = null,
+        int $code = JsonResponse::HTTP_BAD_REQUEST,
+        ?string $businessCode = null
+    ): JsonResponse
     {
+        // Compatibilité rétroactive: certains contrôleurs appellent sendError('msg', 403)
+        if (is_int($errors) && $code === JsonResponse::HTTP_BAD_REQUEST) {
+            $code = $errors;
+            $errors = null;
+        }
+
         $response = [
             'success' => false,
+            'status_code' => $code,
+            'business_code' => $businessCode ?? self::defaultBusinessCode($code),
             'message' => $message,
             'errors'  => $errors,
-            'data'    => null
+            'data'    => null,
+            'correlation_id' => self::resolveCorrelationId(),
         ];
 
         return response()->json($response, $code);
     }
 
-    public static function validationError($errors, $message = 'Validation Error')
+    public static function validationError($arg1, $arg2 = 'Validation Error', ?int $code = null)
     {
+        // Compatibilité: validationError($errors, 'msg') ET validationError('msg', $errors, 422)
+        if (is_string($arg1) && (is_array($arg2) || $arg2 instanceof MessageBag)) {
+            $message = $arg1;
+            $errors = $arg2;
+        } else {
+            $errors = $arg1;
+            $message = is_string($arg2) ? $arg2 : 'Validation Error';
+        }
+
+        $normalizedErrors = $errors instanceof MessageBag ? $errors->toArray() : $errors;
+        $httpCode = $code ?? 422;
+
         return response()->json([
             'success' => false,
+            'status_code' => $httpCode,
+            'business_code' => 'VALIDATION_ERROR',
             'message' => $message,
-            'errors' => $errors->toArray(),
-            'data' => null
-        ], 422);
+            'errors' => $normalizedErrors,
+            'data' => null,
+            'correlation_id' => self::resolveCorrelationId(),
+        ], $httpCode);
     }
 
     // Dans votre ApiResponseClass
@@ -86,11 +160,12 @@ class ApiResponseClass
     {
         $response = [
             'status' => true,
+            'status_code' => $code,
             'access_token' => $tokenData['access_token'] ?? $tokenData,
             'token_type' => $tokenData['token_type'] ?? 'bearer',
             'expires_in' => $tokenData['expires_in'] ?? 3600,
             'message' => $message ?? 'Authentification réussie',
-            'status_code' => $code
+            'correlation_id' => self::resolveCorrelationId(),
         ];
 
         return response()->json($response, $code);
@@ -120,8 +195,17 @@ class ApiResponseClass
         return self::sendError($message, null, JsonResponse::HTTP_FORBIDDEN);
     }
 
-    public static function serverError(string $message = "Erreur interne du serveur"): JsonResponse
+    public static function serverError(
+        string $message = "Erreur interne du serveur",
+        int $code = JsonResponse::HTTP_INTERNAL_SERVER_ERROR,
+        ?string $businessCode = null
+    ): JsonResponse
     {
-        return self::sendError($message, null, JsonResponse::HTTP_INTERNAL_SERVER_ERROR);
+        return self::sendError(
+            $message,
+            null,
+            $code,
+            $businessCode ?? self::defaultBusinessCode($code)
+        );
     }
 }
