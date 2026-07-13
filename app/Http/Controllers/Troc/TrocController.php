@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Troc;
 
 use App\Classes\ApiResponseClass;
 use App\Http\Controllers\Controller;
+use App\Models\SystemSetting;
 use App\Models\TrocPhonePrice;
 use App\Models\TrocRequest;
 use Illuminate\Http\JsonResponse;
@@ -13,6 +14,8 @@ use Illuminate\Support\Facades\Log;
 
 class TrocController extends Controller
 {
+    private const DECOTES_KEY = 'troc_phone_decotes';
+
     public function catalog(): JsonResponse
     {
         $items = TrocPhonePrice::query()
@@ -272,63 +275,64 @@ class TrocController extends Controller
         $items = [];
         $total = 0.0;
         $nextQuestions = [];
+        $decotes = $this->resolveDecotes();
 
         if ($battery < 80) {
-            $items[] = ['label' => 'Batterie < 80%', 'amount' => 40.0];
-            $total += 40.0;
+            $items[] = ['label' => 'Batterie < 80%', 'amount' => $decotes['battery_under_80']];
+            $total += $decotes['battery_under_80'];
         } elseif ($battery < 90) {
-            $items[] = ['label' => 'Batterie < 90%', 'amount' => 20.0];
-            $total += 20.0;
+            $items[] = ['label' => 'Batterie < 90%', 'amount' => $decotes['battery_under_90']];
+            $total += $decotes['battery_under_90'];
         }
 
         if (in_array($normalizedCondition, ['scratched', 'raye', 'raye'], true)) {
-            $items[] = ['label' => 'État rayé', 'amount' => 15.0];
-            $total += 15.0;
+            $items[] = ['label' => 'État rayé', 'amount' => $decotes['scratched']];
+            $total += $decotes['scratched'];
         }
 
         if (in_array($normalizedCondition, ['broken', 'casse', 'cassé'], true)) {
-            $items[] = ['label' => 'État cassé', 'amount' => 50.0];
-            $total += 50.0;
+            $items[] = ['label' => 'État cassé', 'amount' => $decotes['broken']];
+            $total += $decotes['broken'];
         }
 
         if (($normalizedDetails['screen_condition'] ?? 'good') === 'scratched') {
-            $items[] = ['label' => 'Micro-rayures écran', 'amount' => 12.0];
-            $total += 12.0;
+            $items[] = ['label' => 'Micro-rayures écran', 'amount' => $decotes['screen_scratched']];
+            $total += $decotes['screen_scratched'];
         }
 
         if (($normalizedDetails['screen_condition'] ?? 'good') === 'cracked') {
-            $items[] = ['label' => 'Écran fissuré', 'amount' => 45.0];
-            $total += 45.0;
+            $items[] = ['label' => 'Écran fissuré', 'amount' => $decotes['screen_cracked']];
+            $total += $decotes['screen_cracked'];
         }
 
         if (($normalizedDetails['back_condition'] ?? 'good') === 'scratched') {
-            $items[] = ['label' => 'Dos rayé', 'amount' => 10.0];
-            $total += 10.0;
+            $items[] = ['label' => 'Dos rayé', 'amount' => $decotes['back_scratched']];
+            $total += $decotes['back_scratched'];
         }
 
         if (($normalizedDetails['back_condition'] ?? 'good') === 'cracked') {
-            $items[] = ['label' => 'Dos cassé', 'amount' => 25.0];
-            $total += 25.0;
+            $items[] = ['label' => 'Dos cassé', 'amount' => $decotes['back_cracked']];
+            $total += $decotes['back_cracked'];
         }
 
         if (($normalizedDetails['frame_condition'] ?? 'good') === 'dented') {
-            $items[] = ['label' => 'Châssis enfoncé', 'amount' => 15.0];
-            $total += 15.0;
+            $items[] = ['label' => 'Châssis enfoncé', 'amount' => $decotes['frame_dented']];
+            $total += $decotes['frame_dented'];
         }
 
         if (($normalizedDetails['camera_condition'] ?? 'good') === 'damaged') {
-            $items[] = ['label' => 'Caméra endommagée', 'amount' => 20.0];
-            $total += 20.0;
+            $items[] = ['label' => 'Caméra endommagée', 'amount' => $decotes['camera_damaged']];
+            $total += $decotes['camera_damaged'];
         }
 
         if (($normalizedDetails['face_id_works'] ?? true) === false) {
-            $items[] = ['label' => 'Face ID / Touch ID indisponible', 'amount' => 20.0];
-            $total += 20.0;
+            $items[] = ['label' => 'Face ID / Touch ID indisponible', 'amount' => $decotes['biometric_fault']];
+            $total += $decotes['biometric_fault'];
         }
 
         if (($normalizedDetails['repaired'] ?? false) === true) {
-            $items[] = ['label' => 'Téléphone déjà réparé', 'amount' => 15.0];
-            $total += 15.0;
+            $items[] = ['label' => 'Téléphone déjà réparé', 'amount' => $decotes['repaired']];
+            $total += $decotes['repaired'];
         }
 
         if (($normalizedDetails['camera_condition'] ?? 'good') === 'unknown') {
@@ -350,6 +354,20 @@ class TrocController extends Controller
             'image_analysis' => $imageAnalysis,
             'next_questions' => array_values(array_unique($nextQuestions)),
         ];
+    }
+
+    private function resolveDecotes(): array
+    {
+        $defaults = [
+            'battery_under_80' => 40, 'battery_under_90' => 20, 'scratched' => 15, 'broken' => 50,
+            'screen_scratched' => 12, 'screen_cracked' => 45, 'back_scratched' => 10, 'back_cracked' => 25,
+            'frame_dented' => 15, 'camera_damaged' => 20, 'biometric_fault' => 20, 'repaired' => 15,
+        ];
+        $setting = SystemSetting::query()->where('key', self::DECOTES_KEY)->where('is_active', true)->first();
+        $stored = $setting?->formatted_value;
+        $decotes = array_merge($defaults, is_array($stored) ? $stored : []);
+
+        return array_map(fn ($value) => max(0, (float) $value), $decotes);
     }
 
     private function normalizeConditionDetails(array $conditionDetails, array $imageAnalysis = []): array

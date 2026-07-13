@@ -353,6 +353,8 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
             Route::post('/catalog', [TrocAdminController::class, 'storeCatalog']);
             Route::put('/catalog/{catalogItem}', [TrocAdminController::class, 'updateCatalog']);
             Route::delete('/catalog/{catalogItem}', [TrocAdminController::class, 'destroyCatalog']);
+            Route::get('/decotes', [TrocAdminController::class, 'decotes']);
+            Route::put('/decotes', [TrocAdminController::class, 'updateDecotes']);
         });
     });
 
@@ -371,6 +373,8 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
             Route::post('/catalog', [TrocCarAdminController::class, 'storeCatalog']);
             Route::put('/catalog/{catalogItem}', [TrocCarAdminController::class, 'updateCatalog']);
             Route::delete('/catalog/{catalogItem}', [TrocCarAdminController::class, 'destroyCatalog']);
+            Route::get('/decotes', [TrocCarAdminController::class, 'decotes']);
+            Route::put('/decotes', [TrocCarAdminController::class, 'updateDecotes']);
         });
     });
 

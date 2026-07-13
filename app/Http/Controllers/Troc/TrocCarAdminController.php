@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Troc;
 
 use App\Classes\ApiResponseClass;
 use App\Http\Controllers\Controller;
+use App\Models\SystemSetting;
 use App\Models\TrocCarPrice;
 use App\Models\TrocCarRequest;
 use App\Notifications\TrocCarRequestStatusChanged;
@@ -15,6 +16,8 @@ use Illuminate\Validation\ValidationException;
 
 class TrocCarAdminController extends Controller
 {
+    private const DECOTES_KEY = 'troc_car_decotes';
+
     public function requestsIndex(Request $request): JsonResponse
     {
         if ($response = $this->ensureSuperAdmin()) {
@@ -175,6 +178,77 @@ class TrocCarAdminController extends Controller
         $catalogItem->delete();
 
         return ApiResponseClass::sendResponse(null, 'Vehicule du catalogue troc supprime avec succes');
+    }
+
+    public function decotes(): JsonResponse
+    {
+        if ($response = $this->ensureSuperAdmin()) {
+            return $response;
+        }
+
+        return ApiResponseClass::sendResponse(
+            $this->resolveDecotes(),
+            'Parametres de decote troc voiture recuperes avec succes'
+        );
+    }
+
+    public function updateDecotes(Request $request): JsonResponse
+    {
+        if ($response = $this->ensureSuperAdmin()) {
+            return $response;
+        }
+
+        $validated = $request->validate([
+            'decotes' => ['required', 'array'],
+            'decotes.*' => ['numeric', 'min:0', 'max:100'],
+        ]);
+
+        $decotes = array_merge($this->defaultDecotes(), $validated['decotes']);
+        SystemSetting::query()->updateOrCreate(
+            ['key' => self::DECOTES_KEY],
+            [
+                'value' => json_encode($decotes),
+                'type' => 'json',
+                'group' => 'troc',
+                'description' => 'Pourcentages de decote pour les estimations Troc voiture.',
+                'is_active' => true,
+                'is_editable' => true,
+                'order' => 0,
+            ]
+        );
+
+        return ApiResponseClass::sendResponse(
+            $decotes,
+            'Parametres de decote troc voiture mis a jour avec succes'
+        );
+    }
+
+    private function defaultDecotes(): array
+    {
+        return [
+            'mileage_over_100000' => 8,
+            'mileage_over_150000' => 15,
+            'mileage_over_200000' => 25,
+            'scratched' => 5,
+            'broken' => 20,
+            'engine_damaged' => 20,
+            'gearbox_damaged' => 12,
+            'body_cracked' => 10,
+            'interior_worn' => 5,
+            'air_conditioning_fault' => 5,
+            'accident_history' => 15,
+        ];
+    }
+
+    private function resolveDecotes(): array
+    {
+        $setting = SystemSetting::query()
+            ->where('key', self::DECOTES_KEY)
+            ->where('is_active', true)
+            ->first();
+        $stored = $setting?->formatted_value;
+
+        return array_merge($this->defaultDecotes(), is_array($stored) ? $stored : []);
     }
 
     private function ensureSuperAdmin(): ?JsonResponse

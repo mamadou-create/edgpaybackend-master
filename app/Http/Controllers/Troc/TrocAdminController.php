@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Troc;
 
 use App\Classes\ApiResponseClass;
 use App\Http\Controllers\Controller;
+use App\Models\SystemSetting;
 use App\Models\TrocPhonePrice;
 use App\Models\TrocRequest;
 use App\Notifications\TrocRequestStatusChanged;
@@ -15,6 +16,8 @@ use Illuminate\Validation\ValidationException;
 
 class TrocAdminController extends Controller
 {
+    private const DECOTES_KEY = 'troc_phone_decotes';
+
     public function requestsIndex(Request $request): JsonResponse
     {
         if ($response = $this->ensureSuperAdmin()) {
@@ -168,6 +171,75 @@ class TrocAdminController extends Controller
         $catalogItem->delete();
 
         return ApiResponseClass::sendResponse(null, 'Produit du catalogue troc supprimé avec succès');
+    }
+
+    public function decotes(): JsonResponse
+    {
+        if ($response = $this->ensureSuperAdmin()) {
+            return $response;
+        }
+
+        return ApiResponseClass::sendResponse(
+            $this->convertDecotesToGnf($this->resolveDecotes()),
+            'Parametres de decote telephone recuperes avec succes'
+        );
+    }
+
+    public function updateDecotes(Request $request): JsonResponse
+    {
+        if ($response = $this->ensureSuperAdmin()) {
+            return $response;
+        }
+
+        $validated = $request->validate([
+            'decotes' => ['required', 'array'],
+            'decotes.*' => ['numeric', 'min:0', 'max:1000000000'],
+        ]);
+        $stored = [];
+        foreach ($validated['decotes'] as $key => $amount) {
+            $stored[$key] = $this->convertGnfToReference((float) $amount);
+        }
+        $decotes = array_merge($this->defaultDecotes(), $stored);
+
+        SystemSetting::query()->updateOrCreate(
+            ['key' => self::DECOTES_KEY],
+            [
+                'value' => json_encode($decotes),
+                'type' => 'json',
+                'group' => 'troc',
+                'description' => 'Montants de decote pour les estimations Troc telephone.',
+                'is_active' => true,
+                'is_editable' => true,
+                'order' => 0,
+            ]
+        );
+
+        return ApiResponseClass::sendResponse(
+            $this->convertDecotesToGnf($decotes),
+            'Parametres de decote telephone mis a jour avec succes'
+        );
+    }
+
+    private function defaultDecotes(): array
+    {
+        return [
+            'battery_under_80' => 40, 'battery_under_90' => 20,
+            'scratched' => 15, 'broken' => 50, 'screen_scratched' => 12,
+            'screen_cracked' => 45, 'back_scratched' => 10, 'back_cracked' => 25,
+            'frame_dented' => 15, 'camera_damaged' => 20, 'biometric_fault' => 20, 'repaired' => 15,
+        ];
+    }
+
+    private function resolveDecotes(): array
+    {
+        $setting = SystemSetting::query()->where('key', self::DECOTES_KEY)->where('is_active', true)->first();
+        $stored = $setting?->formatted_value;
+        return array_merge($this->defaultDecotes(), is_array($stored) ? $stored : []);
+    }
+
+    private function convertDecotesToGnf(array $decotes): array
+    {
+        return array_map(fn ($amount) => $this->convertReferencePriceToGnf((float) $amount), $decotes);
     }
 
     private function ensureSuperAdmin(): ?JsonResponse

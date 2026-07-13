@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Troc;
 
 use App\Classes\ApiResponseClass;
 use App\Http\Controllers\Controller;
+use App\Models\SystemSetting;
 use App\Models\TrocCarPrice;
 use App\Models\TrocCarRequest;
 use Illuminate\Http\JsonResponse;
@@ -13,6 +14,8 @@ use Illuminate\Support\Facades\Log;
 
 class TrocCarController extends Controller
 {
+    private const DECOTES_KEY = 'troc_car_decotes';
+
     public function catalog(): JsonResponse
     {
         $items = TrocCarPrice::query()
@@ -295,66 +298,68 @@ class TrocCarController extends Controller
         $total = 0.0;
         $nextQuestions = [];
 
+        $decotes = $this->resolveDecotes();
+
         // Helper : décote en % du prix de référence (proportionnel à tous les véhicules)
         $pct = fn (float $percent): float => round($basePrice * $percent / 100, 2);
 
         // ——— Kilométrage ————————————————————————————————————————————
         if ($mileageKm > 200_000) {
-            $items[] = ['label' => 'Kilométrage > 200 000 km (-25%)', 'amount' => $pct(25)];
-            $total   += $pct(25);
+            $items[] = ['label' => 'Kilométrage > 200 000 km (-' . $decotes['mileage_over_200000'] . '%)', 'amount' => $pct($decotes['mileage_over_200000'])];
+            $total   += $pct($decotes['mileage_over_200000']);
         } elseif ($mileageKm > 150_000) {
-            $items[] = ['label' => 'Kilométrage > 150 000 km (-15%)', 'amount' => $pct(15)];
-            $total   += $pct(15);
+            $items[] = ['label' => 'Kilométrage > 150 000 km (-' . $decotes['mileage_over_150000'] . '%)', 'amount' => $pct($decotes['mileage_over_150000'])];
+            $total   += $pct($decotes['mileage_over_150000']);
         } elseif ($mileageKm > 100_000) {
-            $items[] = ['label' => 'Kilométrage > 100 000 km (-8%)', 'amount' => $pct(8)];
-            $total   += $pct(8);
+            $items[] = ['label' => 'Kilométrage > 100 000 km (-' . $decotes['mileage_over_100000'] . '%)', 'amount' => $pct($decotes['mileage_over_100000'])];
+            $total   += $pct($decotes['mileage_over_100000']);
         }
 
         // ——— État général ————————————————————————————————————————————
         if (in_array($normalizedCondition, ['scratched', 'raye'], true)) {
-            $items[] = ['label' => 'Carrosserie rayée (-5%)', 'amount' => $pct(5)];
-            $total   += $pct(5);
+            $items[] = ['label' => 'Carrosserie rayée (-' . $decotes['scratched'] . '%)', 'amount' => $pct($decotes['scratched'])];
+            $total   += $pct($decotes['scratched']);
         }
 
         if (in_array($normalizedCondition, ['broken', 'casse', 'cassee'], true)) {
-            $items[] = ['label' => 'État général dégradé (-20%)', 'amount' => $pct(20)];
-            $total   += $pct(20);
+            $items[] = ['label' => 'État général dégradé (-' . $decotes['broken'] . '%)', 'amount' => $pct($decotes['broken'])];
+            $total   += $pct($decotes['broken']);
         }
 
         // ——— Moteur ——————————————————————————————————————————————————
         if (($normalizedDetails['engine_condition'] ?? 'good') === 'damaged') {
-            $items[] = ['label' => 'Moteur à vérifier (-20%)', 'amount' => $pct(20)];
-            $total   += $pct(20);
+            $items[] = ['label' => 'Moteur à vérifier (-' . $decotes['engine_damaged'] . '%)', 'amount' => $pct($decotes['engine_damaged'])];
+            $total   += $pct($decotes['engine_damaged']);
         }
 
         // ——— Boîte de vitesse ———————————————————————————————————————
         if (($normalizedDetails['gearbox_condition'] ?? 'good') === 'damaged') {
-            $items[] = ['label' => 'Boîte de vitesse fragile (-12%)', 'amount' => $pct(12)];
-            $total   += $pct(12);
+            $items[] = ['label' => 'Boîte de vitesse fragile (-' . $decotes['gearbox_damaged'] . '%)', 'amount' => $pct($decotes['gearbox_damaged'])];
+            $total   += $pct($decotes['gearbox_damaged']);
         }
 
         // ——— Carrosserie ————————————————————————————————————————————
         if (($normalizedDetails['body_condition'] ?? 'good') === 'cracked') {
-            $items[] = ['label' => 'Carrosserie endommagée (-10%)', 'amount' => $pct(10)];
-            $total   += $pct(10);
+            $items[] = ['label' => 'Carrosserie endommagée (-' . $decotes['body_cracked'] . '%)', 'amount' => $pct($decotes['body_cracked'])];
+            $total   += $pct($decotes['body_cracked']);
         }
 
         // ——— Intérieur ——————————————————————————————————————————————
         if (($normalizedDetails['interior_condition'] ?? 'good') === 'worn') {
-            $items[] = ['label' => 'Intérieur usé (-5%)', 'amount' => $pct(5)];
-            $total   += $pct(5);
+            $items[] = ['label' => 'Intérieur usé (-' . $decotes['interior_worn'] . '%)', 'amount' => $pct($decotes['interior_worn'])];
+            $total   += $pct($decotes['interior_worn']);
         }
 
         // ——— Climatisation —————————————————————————————————————————
         if (($normalizedDetails['air_conditioning_ok'] ?? true) === false) {
-            $items[] = ['label' => 'Climatisation non fonctionnelle (-5%)', 'amount' => $pct(5)];
-            $total   += $pct(5);
+            $items[] = ['label' => 'Climatisation non fonctionnelle (-' . $decotes['air_conditioning_fault'] . '%)', 'amount' => $pct($decotes['air_conditioning_fault'])];
+            $total   += $pct($decotes['air_conditioning_fault']);
         }
 
         // ——— Historique accident ———————————————————————————————————
         if (($normalizedDetails['accident_history'] ?? false) === true) {
-            $items[] = ['label' => 'Historique accident (-15%)', 'amount' => $pct(15)];
-            $total   += $pct(15);
+            $items[] = ['label' => 'Historique accident (-' . $decotes['accident_history'] . '%)', 'amount' => $pct($decotes['accident_history'])];
+            $total   += $pct($decotes['accident_history']);
         }
 
         // ——— Questions complémentaires ————————————————————————————
@@ -377,6 +382,20 @@ class TrocCarController extends Controller
             'image_analysis'    => $imageAnalysis,
             'next_questions'    => array_values(array_unique($nextQuestions)),
         ];
+    }
+
+    private function resolveDecotes(): array
+    {
+        $defaults = [
+            'mileage_over_100000' => 8, 'mileage_over_150000' => 15, 'mileage_over_200000' => 25,
+            'scratched' => 5, 'broken' => 20, 'engine_damaged' => 20, 'gearbox_damaged' => 12,
+            'body_cracked' => 10, 'interior_worn' => 5, 'air_conditioning_fault' => 5, 'accident_history' => 15,
+        ];
+        $setting = SystemSetting::query()->where('key', self::DECOTES_KEY)->where('is_active', true)->first();
+        $stored = $setting?->formatted_value;
+        $decotes = array_merge($defaults, is_array($stored) ? $stored : []);
+
+        return array_map(fn ($value) => max(0, min(100, (float) $value)), $decotes);
     }
 
     private function normalizeConditionDetails(array $conditionDetails, array $imageAnalysis = []): array
