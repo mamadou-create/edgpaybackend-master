@@ -20,6 +20,10 @@ class AdminDocumentProfileController extends Controller
             ], 401);
         }
 
+        if (!$this->isSuperAdmin($user)) {
+            return $this->forbiddenResponse();
+        }
+
         $profile = AdminDocumentProfile::query()->firstOrCreate(
             ['user_id' => $user->id],
             ['payload' => $this->defaultPayload()],
@@ -40,6 +44,10 @@ class AdminDocumentProfileController extends Controller
                 'success' => false,
                 'message' => 'Utilisateur non authentifié.',
             ], 401);
+        }
+
+        if (!$this->isSuperAdmin($user)) {
+            return $this->forbiddenResponse();
         }
 
         $validated = $request->validate([
@@ -191,5 +199,22 @@ class AdminDocumentProfileController extends Controller
     {
         $trimmed = trim((string) ($value ?? ''));
         return $trimmed === '' ? null : $trimmed;
+    }
+
+    private function isSuperAdmin(object $user): bool
+    {
+        if (method_exists($user, 'isSuperAdmin')) {
+            return (bool) $user->isSuperAdmin();
+        }
+
+        return (bool) ($user->role?->is_super_admin ?? false);
+    }
+
+    private function forbiddenResponse(): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'Accès réservé au super-admin.',
+        ], 403);
     }
 }

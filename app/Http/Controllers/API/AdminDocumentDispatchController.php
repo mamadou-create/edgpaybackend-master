@@ -23,6 +23,10 @@ class AdminDocumentDispatchController extends Controller
             return ApiResponseClass::unauthorized('Utilisateur non authentifié.');
         }
 
+        if (!$this->isSuperAdmin($user)) {
+            return ApiResponseClass::forbidden('Accès réservé au super-admin.');
+        }
+
         $validator = Validator::make($request->all(), [
             'channel' => ['required', 'string', 'in:email,whatsapp'],
             'document_type' => ['required', 'string', 'max:60'],
@@ -82,5 +86,14 @@ class AdminDocumentDispatchController extends Controller
             $result,
             $result['message'] ?? 'Document envoyé avec succès.',
         );
+    }
+
+    private function isSuperAdmin(object $user): bool
+    {
+        if (method_exists($user, 'isSuperAdmin')) {
+            return (bool) $user->isSuperAdmin();
+        }
+
+        return (bool) ($user->role?->is_super_admin ?? false);
     }
 }
