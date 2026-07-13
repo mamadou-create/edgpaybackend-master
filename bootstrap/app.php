@@ -4,6 +4,10 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 
+// Keep API responses clean on newer PHP runtimes where vendor-level
+// deprecations may otherwise leak into JSON payloads.
+error_reporting(error_reporting() & ~E_DEPRECATED & ~E_USER_DEPRECATED);
+
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__ . '/../routes/web.php',

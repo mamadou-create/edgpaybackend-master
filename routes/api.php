@@ -152,6 +152,7 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
     Route::post('refresh-token', [AuthController::class, 'refresh']);
     Route::get('profile', [AuthController::class, 'userProfile']);
     Route::put('profile', [AuthController::class, 'updateProfile']);
+    Route::delete('delete-account', [AuthController::class, 'deleteAccount']);
     Route::post('enable-two-factor', [AuthController::class, 'enableTwoFactor']);
     Route::post('disable-two-factor', [AuthController::class, 'disableTwoFactor']);
 

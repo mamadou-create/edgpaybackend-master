@@ -22,6 +22,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
@@ -174,6 +175,8 @@ class AuthController extends Controller
             }
 
             return ApiResponseClass::sendResponse($this->respondWithToken($token, new UserResource($user)), 'Connexion réussie');
+        } catch (ValidationException $e) {
+            return ApiResponseClass::validationError('Erreur de validation', $e->errors(), 422);
         } catch (\Exception $e) {
             return ApiResponseClass::serverError('Erreur lors de la connexion');
         }
@@ -260,6 +263,8 @@ class AuthController extends Controller
             $token = Auth::login($user);
 
             return ApiResponseClass::sendResponse($this->respondWithToken($token, $user), 'Connexion réussie');
+        } catch (ValidationException $e) {
+            return ApiResponseClass::validationError('Erreur de validation', $e->errors(), 422);
         } catch (\Exception $e) {
             return ApiResponseClass::serverError('Erreur lors de la vérification du code');
         }
@@ -324,6 +329,8 @@ class AuthController extends Controller
                 ['user_id' => $user->id],
                 'Nouveau code de vérification envoyé par SMS'
             );
+        } catch (ValidationException $e) {
+            return ApiResponseClass::validationError('Erreur de validation', $e->errors(), 422);
         } catch (\Exception $e) {
             return ApiResponseClass::serverError('Erreur lors de l\'envoi du code');
         }
@@ -339,6 +346,52 @@ class AuthController extends Controller
             return ApiResponseClass::sendResponse([], 'Déconnexion réussie');
         } catch (\Exception $e) {
             return ApiResponseClass::serverError('Erreur lors de la déconnexion');
+        }
+    }
+
+    /**
+     * 🔹 Clôturer le compte utilisateur connecté
+     */
+    public function deleteAccount(Request $request)
+    {
+        DB::beginTransaction();
+        try {
+            $user = $request->user();
+            if (!$user) {
+                DB::rollBack();
+                return ApiResponseClass::unauthorized('Non autorisé');
+            }
+
+            $request->validate([
+                'password' => 'required|string',
+            ]);
+
+            if (!Hash::check((string) $request->input('password'), (string) $user->password)) {
+                DB::rollBack();
+                return ApiResponseClass::unauthorized('Mot de passe incorrect');
+            }
+
+            $deleted = $this->userRepository->delete($user->id);
+            if (!$deleted) {
+                DB::rollBack();
+                return ApiResponseClass::sendError('Impossible de clôturer le compte', null, 500);
+            }
+
+            DB::commit();
+
+            try {
+                Auth::logout();
+            } catch (\Throwable $_) {
+                // Best effort: le compte est déjà clôturé, on ignore l'échec logout.
+            }
+
+            return ApiResponseClass::sendResponse([], 'Compte clôturé avec succès');
+        } catch (ValidationException $e) {
+            DB::rollBack();
+            return ApiResponseClass::validationError('Erreur de validation', $e->errors(), 422);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return ApiResponseClass::rollback($e, "Erreur lors de la clôture du compte");
         }
     }
 
