@@ -34,6 +34,8 @@ class AdminDocumentDispatchController extends Controller
             'document_number' => ['required', 'string', 'max:255'],
             'message' => ['nullable', 'string', 'max:5000'],
             'recipient_email' => ['nullable', 'email', 'max:255'],
+            'recipient_emails' => ['nullable', 'array', 'max:20'],
+            'recipient_emails.*' => ['required', 'email', 'max:255'],
             'recipient_phone' => ['nullable', 'string', 'max:50'],
             'recipient_name' => ['nullable', 'string', 'max:255'],
             'pdf_name' => ['required', 'string', 'max:255'],
@@ -48,7 +50,9 @@ class AdminDocumentDispatchController extends Controller
             $pdfB64 = trim((string) $request->input('pdf_b64', ''));
             $attachmentB64 = trim((string) $request->input('attachment_b64', ''));
 
-            if ($channel === 'email' && trim((string) $request->input('recipient_email', '')) === '') {
+            $recipientEmails = $request->input('recipient_emails', []);
+            $hasRecipientEmails = is_array($recipientEmails) && count($recipientEmails) > 0;
+            if ($channel === 'email' && !$hasRecipientEmails && trim((string) $request->input('recipient_email', '')) === '') {
                 $validator->errors()->add('recipient_email', 'L\'email destinataire est requis.');
             }
 

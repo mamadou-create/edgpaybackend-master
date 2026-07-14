@@ -32,7 +32,8 @@ class AdminDocumentDispatchService
 
     private function sendByEmail(User $sender, array $payload): array
     {
-        $recipientEmail = trim((string) ($payload['recipient_email'] ?? ''));
+        $recipientEmails = $this->recipientEmails($payload);
+        $recipientEmail = implode(', ', $recipientEmails);
         $documentTitle = trim((string) ($payload['document_title'] ?? 'Document'));
         $documentNumber = trim((string) ($payload['document_number'] ?? ''));
         $message = trim((string) ($payload['message'] ?? ''));
@@ -40,7 +41,7 @@ class AdminDocumentDispatchService
         try {
             @set_time_limit(120);
 
-            Mail::to($recipientEmail)->send(
+            Mail::to($recipientEmails)->send(
                 new AdminDocumentDispatchMail(
                     sender: $sender,
                     documentTitle: $documentTitle,
@@ -190,5 +191,17 @@ class AdminDocumentDispatchService
     {
         $trimmed = trim((string) ($value ?? ''));
         return $trimmed === '' ? null : $trimmed;
+    }
+
+    /** @return list<string> */
+    private function recipientEmails(array $payload): array
+    {
+        $rawEmails = $payload['recipient_emails'] ?? null;
+        $emails = is_array($rawEmails) ? $rawEmails : [$payload['recipient_email'] ?? null];
+
+        return array_values(array_unique(array_filter(array_map(
+            static fn ($email): string => trim((string) $email),
+            $emails,
+        ))));
     }
 }
