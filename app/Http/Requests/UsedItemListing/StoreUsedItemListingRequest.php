@@ -26,6 +26,21 @@ class StoreUsedItemListingRequest extends FormRequest
             'contact_email' => ['nullable', 'email', 'max:255'],
             'contact_methods' => ['required', 'array', 'min:1'],
             'contact_methods.*' => ['string', Rule::in(['whatsapp', 'sms', 'email', 'call'])],
+            'transaction_type' => ['nullable', Rule::in(UsedItemListing::transactionTypes())],
+            'accepts_barter' => ['nullable', 'boolean'],
+            'wanted_object' => ['nullable', 'string', 'max:255'],
+            'wanted_objects' => ['nullable', 'array'],
+            'wanted_objects.*' => ['string', 'max:255'],
+            'wanted_category' => ['nullable', 'string', 'max:80'],
+            'wanted_value' => ['nullable', 'numeric', 'min:0'],
+            'estimated_object_value' => ['nullable', 'numeric', 'min:0'],
+            'accepts_topup' => ['nullable', 'boolean'],
+            'topup_min_amount' => ['nullable', 'numeric', 'min:0'],
+            'topup_max_amount' => ['nullable', 'numeric', 'min:0'],
+            'max_distance_km' => ['nullable', 'integer', 'min:0', 'max:5000'],
+            'negotiable' => ['nullable', 'boolean'],
+            'warranty' => ['nullable', 'string', 'max:255'],
+            'item_condition' => ['nullable', 'string', 'max:80'],
             'price' => ['nullable', 'numeric', 'min:0'],
             'sale_type' => ['required', Rule::in(UsedItemListing::saleTypes())],
             'starting_bid' => ['nullable', 'numeric', 'min:0'],
@@ -40,10 +55,21 @@ class StoreUsedItemListingRequest extends FormRequest
     public function withValidator($validator): void
     {
         $validator->after(function ($validator) {
+            $transactionType = (string) $this->input(
+                'transaction_type',
+                UsedItemListing::TRANSACTION_TYPE_SALE,
+            );
             $saleType = (string) $this->input('sale_type');
             $price = $this->input('price');
             $startingBid = $this->input('starting_bid');
             $auctionEndsAt = $this->input('auction_ends_at');
+            $wantedObject = trim((string) $this->input('wanted_object', ''));
+            $wantedObjects = collect($this->input('wanted_objects', []))
+                ->map(fn ($item) => trim((string) $item))
+                ->filter(fn ($item) => $item !== '');
+            $acceptsTopup = $this->boolean('accepts_topup');
+            $topupMin = $this->input('topup_min_amount');
+            $topupMax = $this->input('topup_max_amount');
             $contactMethods = collect($this->input('contact_methods', []));
             $contactPhone = trim((string) $this->input('contact_phone', ''));
             $contactEmail = trim((string) $this->input('contact_email', ''));
@@ -67,6 +93,30 @@ class StoreUsedItemListingRequest extends FormRequest
 
             if ($contactMethods->contains('email') && $contactEmail === '') {
                 $validator->errors()->add('contact_email', 'Une adresse email est requise si le contact par email est activé.');
+            }
+
+            if (in_array($transactionType, [
+                UsedItemListing::TRANSACTION_TYPE_BARTER,
+                UsedItemListing::TRANSACTION_TYPE_SALE_OR_BARTER,
+            ], true)) {
+                if ($wantedObject === '' && $wantedObjects->isEmpty()) {
+                    $validator->errors()->add('wanted_object', 'Indiquez au moins un objet recherché pour le troc.');
+                }
+            }
+
+            if ($acceptsTopup) {
+                if ($topupMin === null || $topupMin === '') {
+                    $validator->errors()->add('topup_min_amount', 'Le montant minimum du complément est requis.');
+                }
+                if ($topupMax === null || $topupMax === '') {
+                    $validator->errors()->add('topup_max_amount', 'Le montant maximum du complément est requis.');
+                }
+
+                if (($topupMin !== null && $topupMin !== '') && ($topupMax !== null && $topupMax !== '')) {
+                    if ((float) $topupMax < (float) $topupMin) {
+                        $validator->errors()->add('topup_max_amount', 'Le montant maximum doit être supérieur ou égal au minimum.');
+                    }
+                }
             }
         });
     }

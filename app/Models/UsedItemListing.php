@@ -11,6 +11,10 @@ class UsedItemListing extends Model
 {
     use TraitUuid;
 
+    public const TRANSACTION_TYPE_SALE = 'sale';
+    public const TRANSACTION_TYPE_BARTER = 'barter';
+    public const TRANSACTION_TYPE_SALE_OR_BARTER = 'sale_or_barter';
+
     public const CATEGORY_PHONE = 'Téléphone';
     public const CATEGORY_COMPUTER = 'Ordinateur';
     public const CATEGORY_TABLET = 'Tablette';
@@ -33,7 +37,11 @@ class UsedItemListing extends Model
     public const SALE_TYPE_AUCTION = 'auction';
 
     public const STATUS_ACTIVE = 'active';
+    public const STATUS_DRAFT = 'draft';
+    public const STATUS_SUSPENDED = 'suspended';
     public const STATUS_SOLD = 'sold';
+    public const STATUS_EXCHANGED = 'exchanged';
+    public const STATUS_EXPIRED = 'expired';
     public const STATUS_CLOSED = 'closed';
 
     public const MODERATION_PENDING = 'pending';
@@ -51,6 +59,22 @@ class UsedItemListing extends Model
         'contact_phone',
         'contact_email',
         'contact_methods',
+        'transaction_type',
+        'accepts_barter',
+        'wanted_object',
+        'wanted_objects',
+        'wanted_category',
+        'wanted_value',
+        'estimated_object_value',
+        'accepts_topup',
+        'topup_min_amount',
+        'topup_max_amount',
+        'max_distance_km',
+        'negotiable',
+        'warranty',
+        'item_condition',
+        'listing_status',
+        'listing_quality_score',
         'price',
         'sale_type',
         'starting_bid',
@@ -77,6 +101,16 @@ class UsedItemListing extends Model
         'publication_fee_base_amount' => 'float',
         'publication_fee_amount' => 'float',
         'publication_fee_refunded_amount' => 'float',
+        'accepts_barter' => 'boolean',
+        'wanted_objects' => 'array',
+        'wanted_value' => 'float',
+        'estimated_object_value' => 'float',
+        'accepts_topup' => 'boolean',
+        'topup_min_amount' => 'float',
+        'topup_max_amount' => 'float',
+        'max_distance_km' => 'integer',
+        'negotiable' => 'boolean',
+        'listing_quality_score' => 'float',
         'contact_methods' => 'array',
         'image_urls' => 'array',
         'auction_ends_at' => 'datetime',
@@ -94,11 +128,24 @@ class UsedItemListing extends Model
         ];
     }
 
+    public static function transactionTypes(): array
+    {
+        return [
+            self::TRANSACTION_TYPE_SALE,
+            self::TRANSACTION_TYPE_BARTER,
+            self::TRANSACTION_TYPE_SALE_OR_BARTER,
+        ];
+    }
+
     public static function statuses(): array
     {
         return [
+            self::STATUS_DRAFT,
             self::STATUS_ACTIVE,
+            self::STATUS_SUSPENDED,
             self::STATUS_SOLD,
+            self::STATUS_EXCHANGED,
+            self::STATUS_EXPIRED,
             self::STATUS_CLOSED,
         ];
     }
@@ -143,5 +190,10 @@ class UsedItemListing extends Model
     public function bids(): HasMany
     {
         return $this->hasMany(UsedItemBid::class, 'listing_id');
+    }
+
+    public function tradeOffers(): HasMany
+    {
+        return $this->hasMany(TradeOffer::class, 'listing_id');
     }
 }

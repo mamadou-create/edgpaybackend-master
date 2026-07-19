@@ -15,6 +15,7 @@ use App\Http\Controllers\API\UserController;
 use App\Http\Controllers\API\DemandeProController;
 use App\Http\Controllers\API\DmlController;
 use App\Http\Controllers\API\DjomyController;
+use App\Http\Controllers\API\FavoriteController;
 use App\Http\Controllers\API\MessageController;
 use App\Http\Controllers\API\PaymentController;
 use App\Http\Controllers\API\PaymentOpsController;
@@ -25,7 +26,11 @@ use App\Http\Controllers\API\ReloadlyController;
 use App\Http\Controllers\API\SmsController;
 use App\Http\Controllers\API\SystemSettingController;
 use App\Http\Controllers\API\TopupRequestController;
+use App\Http\Controllers\API\TradeMatchController;
+use App\Http\Controllers\API\TradeEscrowController;
+use App\Http\Controllers\API\TradeOfferController;
 use App\Http\Controllers\API\UsedItemListingController;
+use App\Http\Controllers\API\SavedSearchController;
 use App\Http\Controllers\API\ClientWalletController;
 use App\Http\Controllers\API\ChatbotController;
 use App\Http\Controllers\Troc\TrocController;
@@ -584,6 +589,15 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
         Route::get('/mine', [UsedItemListingController::class, 'myListings']);
         Route::post('/upload', [UsedItemListingController::class, 'uploadImage']);
         Route::post('/', [UsedItemListingController::class, 'store']);
+        Route::get('/{listing}/trade-offers', [TradeOfferController::class, 'index']);
+        Route::post('/{listing}/trade-offers', [TradeOfferController::class, 'store']);
+        Route::match(['put', 'patch'], '/trade-offers/{tradeOffer}/status', [TradeOfferController::class, 'updateStatus']);
+        Route::get('/trade-offers/{tradeOffer}/escrow', [TradeEscrowController::class, 'show']);
+        Route::post('/trade-offers/{tradeOffer}/escrow/block', [TradeEscrowController::class, 'block']);
+        Route::post('/trade-offers/{tradeOffer}/escrow/release', [TradeEscrowController::class, 'release']);
+        Route::post('/trade-offers/{tradeOffer}/escrow/dispute', [TradeEscrowController::class, 'dispute']);
+        Route::post('/trade-offers/{tradeOffer}/escrow/cancel', [TradeEscrowController::class, 'cancel']);
+        Route::get('/{listing}/matches', [TradeMatchController::class, 'index']);
         Route::get('/{listing}/bids', [UsedItemListingController::class, 'bidHistory']);
         Route::post('/{listing}/bids', [UsedItemListingController::class, 'placeBid']);
         Route::match(['put', 'patch'], '/{listing}/status', [UsedItemListingController::class, 'updateStatus']);
@@ -593,6 +607,20 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
     Route::prefix('admin/occasions')->group(function () {
         Route::get('/', [UsedItemListingController::class, 'adminIndex']);
         Route::match(['put', 'patch'], '/{listing}', [UsedItemListingController::class, 'adminUpdate']);
+    });
+
+    Route::prefix('saved-searches')->group(function () {
+        Route::get('/', [SavedSearchController::class, 'index']);
+        Route::post('/', [SavedSearchController::class, 'store']);
+        Route::post('/scan', [SavedSearchController::class, 'scan']);
+        Route::match(['put', 'patch'], '/{savedSearch}', [SavedSearchController::class, 'update']);
+        Route::delete('/{savedSearch}', [SavedSearchController::class, 'destroy']);
+    });
+
+    Route::prefix('favorites')->group(function () {
+        Route::get('/', [FavoriteController::class, 'index']);
+        Route::post('/', [FavoriteController::class, 'store']);
+        Route::delete('/{favorite}', [FavoriteController::class, 'destroy']);
     });
 
 

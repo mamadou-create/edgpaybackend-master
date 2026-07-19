@@ -10,6 +10,7 @@ use App\Interfaces\CommissionRepositoryInterface;
 use App\Models\UsedItemBid;
 use App\Models\UsedItemListing;
 use App\Models\User;
+use App\Models\Wallet;
 use App\Support\PublicMediaUrl;
 use App\Services\WalletService;
 use Illuminate\Http\JsonResponse;
@@ -38,6 +39,9 @@ class UsedItemListingController extends Controller
     {
         $status = trim((string) $request->query('status', UsedItemListing::STATUS_ACTIVE));
         $saleType = trim((string) $request->query('sale_type', ''));
+        $transactionType = trim((string) $request->query('transaction_type', ''));
+        $itemCondition = trim((string) $request->query('item_condition', ''));
+        $wantedObject = trim((string) $request->query('wanted_object', ''));
         $query = trim((string) $request->query('q', ''));
         $perPage = max(1, min((int) $request->query('per_page', $request->query('limit', 24)), 100));
 
@@ -52,6 +56,14 @@ class UsedItemListingController extends Controller
             })
             ->when($status !== 'all', fn ($builder) => $builder->where('status', $status))
             ->when($saleType !== '' && in_array($saleType, UsedItemListing::saleTypes(), true), fn ($builder) => $builder->where('sale_type', $saleType))
+            ->when($transactionType !== '' && in_array($transactionType, UsedItemListing::transactionTypes(), true), fn ($builder) => $builder->where('transaction_type', $transactionType))
+            ->when($itemCondition !== '', fn ($builder) => $builder->where('item_condition', 'like', "%{$itemCondition}%"))
+            ->when($wantedObject !== '', function ($builder) use ($wantedObject) {
+                $builder->where(function ($inner) use ($wantedObject) {
+                    $inner->where('wanted_object', 'like', "%{$wantedObject}%")
+                        ->orWhereJsonContains('wanted_objects', $wantedObject);
+                });
+            })
             ->when($query !== '', function ($builder) use ($query) {
                 $builder->where(function ($inner) use ($query) {
                     $inner->where('title', 'like', "%{$query}%")
@@ -125,6 +137,16 @@ class UsedItemListingController extends Controller
 
         try {
             $result = DB::transaction(function () use ($user, $validated, $storedImageUrls, $storedPrimaryImageUrl) {
+                $transactionType = (string) ($validated['transaction_type'] ?? UsedItemListing::TRANSACTION_TYPE_SALE);
+                $acceptsBarter = in_array($transactionType, [
+                    UsedItemListing::TRANSACTION_TYPE_BARTER,
+                    UsedItemListing::TRANSACTION_TYPE_SALE_OR_BARTER,
+                ], true);
+                $wantedObjects = collect($validated['wanted_objects'] ?? [])
+                    ->map(fn ($item) => trim((string) $item))
+                    ->filter(fn ($item) => $item !== '')
+                    ->values()
+                    ->all();
                 $saleType = (string) $validated['sale_type'];
                 $feeRate = $this->resolvePublicationFeeRate();
                 $baseAmount = $this->resolvePublicationFeeBaseAmount($saleType, $validated);
@@ -157,6 +179,22 @@ class UsedItemListingController extends Controller
                     'contact_phone' => $validated['contact_phone'],
                     'contact_email' => $validated['contact_email'] ?? null,
                     'contact_methods' => array_values($validated['contact_methods'] ?? []),
+                    'transaction_type' => $transactionType,
+                    'accepts_barter' => $acceptsBarter,
+                    'wanted_object' => $validated['wanted_object'] ?? null,
+                    'wanted_objects' => $wantedObjects,
+                    'wanted_category' => $validated['wanted_category'] ?? null,
+                    'wanted_value' => $validated['wanted_value'] ?? null,
+                    'estimated_object_value' => $validated['estimated_object_value'] ?? null,
+                    'accepts_topup' => (bool) ($validated['accepts_topup'] ?? false),
+                    'topup_min_amount' => $validated['topup_min_amount'] ?? null,
+                    'topup_max_amount' => $validated['topup_max_amount'] ?? null,
+                    'max_distance_km' => $validated['max_distance_km'] ?? null,
+                    'negotiable' => (bool) ($validated['negotiable'] ?? false),
+                    'warranty' => $validated['warranty'] ?? null,
+                    'item_condition' => $validated['item_condition'] ?? $validated['condition_label'],
+                    'listing_status' => UsedItemListing::STATUS_ACTIVE,
+                    'listing_quality_score' => 0,
                     'price' => $saleType === UsedItemListing::SALE_TYPE_FIXED ? (float) ($validated['price'] ?? 0) : null,
                     'sale_type' => $saleType,
                     'starting_bid' => $saleType === UsedItemListing::SALE_TYPE_AUCTION ? (float) ($validated['starting_bid'] ?? 0) : null,
@@ -310,20 +348,147 @@ class UsedItemListingController extends Controller
             );
         }
 
-        $bid = UsedItemBid::query()->create([
-            'listing_id' => $listing->id,
-            'bidder_id' => $user->id,
-            'amount' => $newAmount,
-        ]);
+        try {
+            $result = DB::transaction(function () use ($listing, $user, $newAmount) {
+                /** @var UsedItemListing|null $lockedListing */
+                $lockedListing = UsedItemListing::query()
+                    ->whereKey($listing->id)
+                    ->lockForUpdate()
+                    ->first();
 
-        $bid->loadMissing(['bidder:id,display_name,phone']);
-        $listing->loadMissing(['seller:id,display_name,phone']);
-        $listing->loadCount('bids');
-        $listing->loadMax('bids', 'amount');
+                if (!$lockedListing) {
+                    throw new \RuntimeException('Annonce introuvable.');
+                }
+
+                if ($lockedListing->sale_type !== UsedItemListing::SALE_TYPE_AUCTION) {
+                    throw new \RuntimeException('Cette annonce n\'accepte pas les enchères.');
+                }
+                if ((string) $lockedListing->seller_id === (string) $user->id) {
+                    throw new \RuntimeException('Vous ne pouvez pas enchérir sur votre propre annonce.');
+                }
+                if ($lockedListing->moderation_status !== UsedItemListing::MODERATION_APPROVED) {
+                    throw new \RuntimeException('Cette annonce n\'est pas encore ouverte aux enchères.');
+                }
+                if ($lockedListing->status !== UsedItemListing::STATUS_ACTIVE) {
+                    throw new \RuntimeException('Cette annonce n\'est plus active.');
+                }
+                if ($this->isPublicationExpired($lockedListing)) {
+                    throw new \RuntimeException('La durée de diffusion de cette annonce est expirée.');
+                }
+                if ($lockedListing->auction_ends_at !== null && $lockedListing->auction_ends_at->isPast()) {
+                    throw new \RuntimeException('Cette enchère est déjà terminée.');
+                }
+
+                $previousTopBid = UsedItemBid::query()
+                    ->where('listing_id', $lockedListing->id)
+                    ->orderByDesc('amount')
+                    ->orderByDesc('created_at')
+                    ->lockForUpdate()
+                    ->first();
+
+                $currentTopAmount = max(
+                    (float) ($lockedListing->starting_bid ?? 0),
+                    (float) ($previousTopBid?->amount ?? 0)
+                );
+
+                if ($newAmount <= $currentTopAmount) {
+                    throw new \RuntimeException('Votre enchère doit être supérieure au montant actuel.');
+                }
+
+                $bidderWallet = Wallet::query()
+                    ->where('user_id', $user->id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$bidderWallet) {
+                    throw new \RuntimeException('Wallet introuvable pour placer une enchère.');
+                }
+
+                $bidderWasTop = $previousTopBid !== null
+                    && (string) $previousTopBid->bidder_id === (string) $user->id;
+
+                $amountToBlock = $bidderWasTop
+                    ? max(0, (int) ceil($newAmount - (float) $previousTopBid->amount))
+                    : max(0, (int) ceil($newAmount));
+
+                $blockedBefore = (int) $bidderWallet->blocked_amount;
+                $availableBefore = (int) $bidderWallet->cash_available - $blockedBefore;
+                if ($availableBefore < $amountToBlock) {
+                    throw new \RuntimeException(
+                        "Solde disponible insuffisant. Disponible: {$availableBefore} GNF, requis: {$amountToBlock} GNF"
+                    );
+                }
+
+                if ($amountToBlock > 0) {
+                    $bidderWallet->blocked_amount += $amountToBlock;
+                    $bidderWallet->save();
+                }
+
+                $bid = UsedItemBid::query()->create([
+                    'listing_id' => $lockedListing->id,
+                    'bidder_id' => $user->id,
+                    'amount' => $newAmount,
+                ]);
+
+                $releasedForPreviousTopBidder = 0;
+                if ($previousTopBid !== null && !$bidderWasTop) {
+                    $previousWallet = Wallet::query()
+                        ->where('user_id', $previousTopBid->bidder_id)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($previousWallet) {
+                        $unlockAmount = min(
+                            (int) $previousWallet->blocked_amount,
+                            max(0, (int) ceil((float) $previousTopBid->amount))
+                        );
+
+                        if ($unlockAmount > 0) {
+                            $previousWallet->blocked_amount -= $unlockAmount;
+                            $previousWallet->save();
+                            $releasedForPreviousTopBidder = $unlockAmount;
+                        }
+                    }
+                }
+
+                $bidderWallet->refresh();
+                $blockedAfter = (int) $bidderWallet->blocked_amount;
+                $availableAfter = (int) $bidderWallet->cash_available - $blockedAfter;
+
+                $bid->loadMissing(['bidder:id,display_name,phone']);
+                $lockedListing->loadMissing(['seller:id,display_name,phone']);
+                $lockedListing->loadCount('bids');
+                $lockedListing->loadMax('bids', 'amount');
+
+                return [
+                    'bid' => $bid,
+                    'listing' => $lockedListing->fresh()
+                        ->load(['seller:id,display_name,phone'])
+                        ->loadCount('bids')
+                        ->loadMax('bids', 'amount'),
+                    'wallet' => [
+                        'cash_available' => (int) $bidderWallet->cash_available,
+                        'blocked_before' => $blockedBefore,
+                        'blocked_after' => $blockedAfter,
+                        'available_before' => $availableBefore,
+                        'available_after' => $availableAfter,
+                        'amount_blocked_for_bid' => $amountToBlock,
+                        'released_for_previous_top_bidder' => $releasedForPreviousTopBidder,
+                        'was_already_top_bidder' => $bidderWasTop,
+                    ],
+                ];
+            });
+        } catch (\RuntimeException $exception) {
+            return ApiResponseClass::sendError($exception->getMessage(), null, 422);
+        } catch (Throwable $exception) {
+            report($exception);
+            return ApiResponseClass::serverError('Erreur lors de l enregistrement de l enchère.');
+        }
 
         return ApiResponseClass::created([
-            'bid' => $this->serializeBid($bid),
-            'listing' => $this->serializeListing($listing->fresh()->load(['seller:id,display_name,phone'])->loadCount('bids')->loadMax('bids', 'amount')),
+            'bid' => $this->serializeBid($result['bid']),
+            'listing' => $this->serializeListing($result['listing']),
+            'wallet' => $result['wallet'],
         ], 'Enchère enregistrée avec succès');
     }
 
@@ -533,6 +698,22 @@ class UsedItemListingController extends Controller
             'contact_phone' => $listing->contact_phone,
             'contact_email' => $listing->contact_email,
             'contact_methods' => array_values($listing->contact_methods ?? []),
+            'transaction_type' => $listing->transaction_type ?? UsedItemListing::TRANSACTION_TYPE_SALE,
+            'accepts_barter' => (bool) ($listing->accepts_barter ?? false),
+            'wanted_object' => $listing->wanted_object,
+            'wanted_objects' => array_values($listing->wanted_objects ?? []),
+            'wanted_category' => $listing->wanted_category,
+            'wanted_value' => $listing->wanted_value,
+            'estimated_object_value' => $listing->estimated_object_value,
+            'accepts_topup' => (bool) ($listing->accepts_topup ?? false),
+            'topup_min_amount' => $listing->topup_min_amount,
+            'topup_max_amount' => $listing->topup_max_amount,
+            'max_distance_km' => $listing->max_distance_km,
+            'negotiable' => (bool) ($listing->negotiable ?? false),
+            'warranty' => $listing->warranty,
+            'item_condition' => $listing->item_condition ?? $listing->condition_label,
+            'listing_status' => $listing->listing_status ?? $listing->status,
+            'listing_quality_score' => (float) ($listing->listing_quality_score ?? 0),
             'price' => $listing->price,
             'sale_type' => $listing->sale_type,
             'starting_bid' => $listing->starting_bid,
