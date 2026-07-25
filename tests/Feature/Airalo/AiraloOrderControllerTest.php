@@ -6,6 +6,7 @@ use App\Models\AiraloOrder;
 use App\Models\User;
 use App\Models\Wallet;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\Test;
@@ -35,7 +36,16 @@ class AiraloOrderControllerTest extends TestCase
             ], 200),
             'https://partners.airalo.test/v2/packages*' => Http::response([
                 'data' => [
-                    ['id' => 'pkg-123', 'title' => 'France 3GB', 'price' => 1000, 'currency' => 'GNF'],
+                    [
+                        'id' => 'pkg-123',
+                        'title' => 'France 3GB',
+                        'country_name' => 'France',
+                        'data' => '3 GB',
+                        'validity_days' => 7,
+                        'operator_name' => 'Orange',
+                        'price' => 1000,
+                        'currency' => 'GNF',
+                    ],
                 ],
             ], 200),
             'https://partners.airalo.test/v2/orders' => Http::response([
@@ -82,12 +92,20 @@ class AiraloOrderControllerTest extends TestCase
         $this->assertDatabaseHas('airalo_orders', [
             'user_id' => $user->id,
             'package_id' => 'pkg-123',
+            'package_title' => 'France 3GB',
+            'destination' => 'France',
+            'data_volume' => '3 GB',
+            'validity_days' => 7,
+            'operator_name' => 'Orange',
             'airalo_order_id' => 'ord-789',
-            'iccid' => '8988211000000000001',
             'quantity' => 1,
             'status' => 'completed',
             'currency' => 'GNF',
         ]);
+        $this->assertFalse(Schema::hasColumn('airalo_orders', 'iccid'));
+        $this->assertFalse(Schema::hasColumn('airalo_orders', 'qrcode_url'));
+        $this->assertFalse(Schema::hasColumn('airalo_orders', 'smdp_address'));
+        $this->assertFalse(Schema::hasColumn('airalo_orders', 'ac_code'));
 
         $this->assertDatabaseHas('wallet_transactions', [
             'wallet_id' => $wallet->id,
@@ -201,7 +219,11 @@ class AiraloOrderControllerTest extends TestCase
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.0.package_id', 'pkg-history-1')
             ->assertJsonPath('data.0.airalo_order_id', 'ord-history-1')
-            ->assertJsonPath('data.0.status', 'completed');
+            ->assertJsonPath('data.0.status', 'completed')
+            ->assertJsonMissingPath('data.0.iccid')
+            ->assertJsonMissingPath('data.0.qrcode_url')
+            ->assertJsonMissingPath('data.0.smdp_address')
+            ->assertJsonMissingPath('data.0.ac_code');
     }
 
     #[Test]

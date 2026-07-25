@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Models\Wallet;
 use App\Models\WalletTransaction;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 
@@ -116,11 +117,12 @@ class AiraloOrdersService
             AiraloOrder::query()->create([
                 'user_id' => $user->id,
                 'package_id' => $normalizedPackageId,
+                'package_title' => $this->packageTitle($package),
+                'destination' => $this->packageDestination($package),
+                'data_volume' => $this->packageDataVolume($package),
+                'validity_days' => $this->packageValidityDays($package),
+                'operator_name' => $this->packageOperatorName($package),
                 'airalo_order_id' => $normalized['order_id'] ?? null,
-                'iccid' => $normalized['iccid'] ?? null,
-                'qrcode_url' => $normalized['qrcode_url'] ?? null,
-                'smdp_address' => $normalized['smdp_address'] ?? null,
-                'ac_code' => $normalized['ac_code'] ?? null,
                 'quantity' => $quantity,
                 'price' => $unitPrice,
                 'currency' => $this->extractPackageCurrency($package),
@@ -148,6 +150,12 @@ class AiraloOrdersService
             $normalized['wallet_debited_amount'] = $totalAmount;
             $normalized['wallet_balance_before'] = $balanceBefore;
             $normalized['wallet_balance_after'] = (int) $wallet->cash_available;
+
+            Log::info('Airalo order created.', [
+                'order_id' => $normalized['order_id'] ?? null,
+                'package_id' => $normalizedPackageId,
+                'status' => 'completed',
+            ]);
 
             return $normalized;
         });
@@ -223,6 +231,57 @@ class AiraloOrdersService
         return strtoupper((string) $currency);
     }
 
+    private function packageTitle(array $package): ?string
+    {
+        return $this->firstString($package, ['title', 'name']);
+    }
+
+    private function packageDestination(array $package): ?string
+    {
+        return $this->firstString($package, [
+            'country_name',
+            'countryName',
+            'destination',
+            'country_code',
+            'iso_code',
+        ]);
+    }
+
+    private function packageDataVolume(array $package): ?string
+    {
+        $value = $package['data']
+            ?? $package['data_amount']
+            ?? $package['amount']
+            ?? null;
+        if ($value === null || trim((string) $value) === '') {
+            return null;
+        }
+
+        $unit = strtoupper(trim((string) ($package['data_unit'] ?? 'GB')));
+        if (is_numeric($value)) {
+            return rtrim(rtrim(number_format((float) $value, 2, '.', ''), '0'), '.') . ' ' . $unit;
+        }
+
+        return trim((string) $value);
+    }
+
+    private function packageValidityDays(array $package): ?int
+    {
+        $value = $package['validity_days'] ?? $package['day'] ?? $package['days'] ?? null;
+
+        return is_numeric($value) && (int) $value > 0 ? (int) $value : null;
+    }
+
+    private function packageOperatorName(array $package): ?string
+    {
+        $operator = $package['operator_name'] ?? $package['operator'] ?? null;
+        if (is_array($operator)) {
+            $operator = $operator['name'] ?? $operator['title'] ?? null;
+        }
+
+        return is_string($operator) && trim($operator) !== '' ? trim($operator) : null;
+    }
+
     private function convertToGnf(float $amount, string $currency): int
     {
         return match ($currency) {
@@ -280,6 +339,8 @@ class AiraloOrdersService
                         'id' => $id,
                         'package_id' => (string) ($package['package_id'] ?? $id),
                         'country_code' => (string) ($entry['country_code'] ?? $entry['iso_code'] ?? ''),
+                        'country_name' => (string) ($entry['title'] ?? $entry['name'] ?? ''),
+                        'operator_name' => (string) ($operator['operator_name'] ?? $operator['name'] ?? ''),
                     ];
                 }
             }

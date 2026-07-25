@@ -13,11 +13,12 @@ class AiraloOrder extends Model
     protected $fillable = [
         'user_id',
         'package_id',
+        'package_title',
+        'destination',
+        'data_volume',
+        'validity_days',
+        'operator_name',
         'airalo_order_id',
-        'iccid',
-        'qrcode_url',
-        'smdp_address',
-        'ac_code',
         'quantity',
         'price',
         'currency',
@@ -32,6 +33,7 @@ class AiraloOrder extends Model
     {
         return [
             'quantity' => 'integer',
+            'validity_days' => 'integer',
             'price' => 'float',
         ];
     }

@@ -9,6 +9,7 @@ class AiraloApiException extends RuntimeException
     public function __construct(
         private readonly int $statusCode,
         string $message,
+        private readonly string $airaloMessage = '',
         private readonly array $payload = [],
         ?\Throwable $previous = null,
     ) {
@@ -23,5 +24,15 @@ class AiraloApiException extends RuntimeException
     public function payload(): array
     {
         return $this->payload;
+    }
+
+    public function airaloMessage(): string
+    {
+        return $this->airaloMessage;
+    }
+
+    public function errorCode(): string
+    {
+        return 'AIRALO_' . $this->statusCode;
     }
 }

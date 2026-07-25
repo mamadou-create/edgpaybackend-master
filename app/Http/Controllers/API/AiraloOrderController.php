@@ -54,6 +54,7 @@ class AiraloOrderController extends Controller
 
             return response()->json([
                 'success' => true,
+                'message' => 'Commande eSIM créée.',
                 'data' => [
                     'order_id' => $order['order_id'] ?? null,
                     'iccid' => $order['iccid'] ?? null,
@@ -78,15 +79,7 @@ class AiraloOrderController extends Controller
                 ],
             ], $exception->statusCode());
         } catch (AiraloApiException $exception) {
-            $businessCode = $exception->statusCode() === 402
-                ? 'AIRALO_INSUFFICIENT_CREDIT'
-                : 'AIRALO_API_ERROR';
-
-            return response()->json([
-                'success' => false,
-                'business_code' => $businessCode,
-                'message' => 'Erreur Airalo lors de la creation de commande: ' . $exception->getMessage(),
-            ], $exception->statusCode());
+            return $this->airaloError($exception, 'La commande eSIM n’a pas pu être créée.');
         } catch (\Throwable $exception) {
             return response()->json([
                 'success' => false,
@@ -110,11 +103,12 @@ class AiraloOrderController extends Controller
             ->get([
                 'id',
                 'package_id',
+                'package_title',
+                'destination',
+                'data_volume',
+                'validity_days',
+                'operator_name',
                 'airalo_order_id',
-                'iccid',
-                'qrcode_url',
-                'smdp_address',
-                'ac_code',
                 'quantity',
                 'price',
                 'currency',
@@ -126,6 +120,7 @@ class AiraloOrderController extends Controller
 
         return response()->json([
             'success' => true,
+            'message' => 'Historique eSIM récupéré.',
             'data' => $orders,
         ], 200);
     }
@@ -154,7 +149,19 @@ class AiraloOrderController extends Controller
 
         return response()->json([
             'success' => true,
+            'message' => 'Commande eSIM récupérée.',
             'data' => $order,
         ], 200);
+    }
+
+    private function airaloError(AiraloApiException $exception, string $message): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'status' => $exception->statusCode(),
+            'message' => $message,
+            'airalo_message' => $exception->airaloMessage(),
+            'code' => $exception->errorCode(),
+        ], $exception->statusCode());
     }
 }

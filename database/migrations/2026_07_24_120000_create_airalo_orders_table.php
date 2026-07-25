@@ -16,10 +16,6 @@ return new class extends Migration
             $table->foreignUuid('user_id')->constrained('users')->cascadeOnDelete();
             $table->string('package_id');
             $table->string('airalo_order_id')->nullable()->unique();
-            $table->string('iccid')->nullable()->index();
-            $table->text('qrcode_url')->nullable();
-            $table->string('smdp_address')->nullable();
-            $table->string('ac_code')->nullable();
             $table->integer('quantity')->default(1);
             $table->decimal('price', 10, 2)->nullable();
             $table->string('currency', 3)->default('USD');

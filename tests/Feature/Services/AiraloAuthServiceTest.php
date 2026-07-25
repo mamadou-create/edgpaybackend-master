@@ -4,6 +4,7 @@ namespace Tests\Feature\Services;
 
 use App\Services\AiraloAuthService;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\Test;
 use RuntimeException;
@@ -21,7 +22,7 @@ class AiraloAuthServiceTest extends TestCase
             'cache.default' => 'array',
         ]);
 
-        Cache::forget('airalo:oauth:access_token');
+        Cache::forget('airalo:oauth:access_token:production');
 
         Http::fake([
             'https://partners.airalo.test/v2/token' => Http::response([
@@ -40,7 +41,9 @@ class AiraloAuthServiceTest extends TestCase
         $this->assertSame('airalo-token-123', $secondToken);
 
         Http::assertSentCount(1);
-        $this->assertSame('airalo-token-123', Cache::get('airalo:oauth:access_token'));
+        $cachedToken = Cache::get('airalo:oauth:access_token:production');
+        $this->assertIsString($cachedToken);
+        $this->assertSame('airalo-token-123', Crypt::decryptString($cachedToken));
     }
 
     #[Test]
@@ -52,7 +55,7 @@ class AiraloAuthServiceTest extends TestCase
             'services.airalo.client_secret' => 'invalid-secret',
         ]);
 
-        Cache::forget('airalo:oauth:access_token');
+        Cache::forget('airalo:oauth:access_token:production');
 
         Http::fake([
             'https://partners.airalo.test/v2/token' => Http::response([

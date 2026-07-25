@@ -178,6 +178,9 @@ class AiraloPackageControllerTest extends TestCase
 
         $response
             ->assertStatus(500)
-            ->assertJsonPath('success', false);
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('status', 500)
+            ->assertJsonPath('code', 'AIRALO_500')
+            ->assertJsonStructure(['airalo_message']);
     }
 }

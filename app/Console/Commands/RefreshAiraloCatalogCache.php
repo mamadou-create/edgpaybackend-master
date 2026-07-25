@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\AiraloPackagesService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
 
 class RefreshAiraloCatalogCache extends Command
 {
@@ -19,6 +20,7 @@ class RefreshAiraloCatalogCache extends Command
         if (!$this->option('no-warm')) {
             $countries = $packagesService->getCountries();
             $this->info(sprintf('%d destinations Airalo rechargées depuis l’API Live.', count($countries)));
+            Log::info('Airalo catalog synchronized.', ['destinations_count' => count($countries)]);
         }
 
         return self::SUCCESS;

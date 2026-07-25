@@ -3,9 +3,12 @@
 namespace App\Services;
 
 use App\Exceptions\AiraloApiException;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class AiraloApiClientService
 {
@@ -86,7 +89,11 @@ class AiraloApiClientService
     public function getPackagesByType(string $type): array
     {
         $normalizedType = strtolower(trim($type));
-        if (!in_array($normalizedType, ['local', 'regional', 'global'], true)) {
+        if ($normalizedType === 'regional') {
+            return ['data' => []];
+        }
+
+        if (!in_array($normalizedType, ['local', 'global'], true)) {
             throw new AiraloApiException(500, 'Airalo package type is invalid.');
         }
 
@@ -124,11 +131,15 @@ class AiraloApiClientService
 
         try {
             $request = $this->buildRequest($token);
-            $response = match (strtoupper($method)) {
-                'GET' => $request->get($url, $data),
-                'POST' => $request->post($url, $data),
-                default => throw new AiraloApiException(500, 'Airalo API client error: unsupported HTTP method ' . $method),
-            };
+            try {
+                $response = match (strtoupper($method)) {
+                    'GET' => $request->get($url, $data),
+                    'POST' => $request->post($url, $data),
+                    default => throw new AiraloApiException(500, 'Airalo API client error: unsupported HTTP method ' . $method),
+                };
+            } catch (RequestException $exception) {
+                $response = $exception->response;
+            }
 
             if ($response->status() === 401 && !$hasRetriedAfterUnauthorized) {
                 $this->authService->invalidateTokenCache();
@@ -149,9 +160,14 @@ class AiraloApiClientService
         } catch (AiraloApiException $exception) {
             throw $exception;
         } catch (\Throwable $exception) {
+            Log::warning('Airalo network request failed.', [
+                'endpoint' => $endpoint,
+                'exception_class' => $exception::class,
+            ]);
             throw new AiraloApiException(
                 500,
-                'Airalo API request failed due to a network or unexpected error: ' . $exception->getMessage(),
+                'Airalo API request failed due to a network or unexpected error.',
+                'Network or unexpected upstream error.',
                 [],
                 $exception
             );
@@ -162,7 +178,20 @@ class AiraloApiClientService
     {
         return Http::withToken($token)
             ->acceptJson()
-            ->timeout(20);
+            ->timeout(max(1, (int) config('services.airalo.timeout', 20)))
+            ->retry(
+                max(1, (int) config('services.airalo.retry_attempts', 3)),
+                100,
+                static function (\Throwable $exception): bool {
+                    if ($exception instanceof ConnectionException) {
+                        return true;
+                    }
+
+                    return $exception instanceof RequestException
+                        && in_array($exception->response->status(), [429, 500, 502, 503, 504], true);
+                },
+                throw: true,
+            );
     }
 
     private function mapHttpErrorToException(Response $response, string $endpoint): AiraloApiException
@@ -173,7 +202,8 @@ class AiraloApiClientService
         $safePayload = $this->redactSensitivePayload($payloadArray);
 
         $apiMessage = (string) (
-            $safePayload['message']
+            $safePayload['meta']['message']
+            ?? $safePayload['message']
             ?? $safePayload['error_description']
             ?? $safePayload['error']
             ?? 'Unknown Airalo error'
@@ -189,7 +219,13 @@ class AiraloApiClientService
             default => sprintf('Airalo API error (%d) on %s: %s', $status, $endpoint, $safeApiMessage),
         };
 
-        return new AiraloApiException($status, $message, $safePayload);
+        Log::warning('Airalo API error.', [
+            'endpoint' => $endpoint,
+            'status' => $status,
+            'code' => 'AIRALO_' . $status,
+        ]);
+
+        return new AiraloApiException($status, $message, $safeApiMessage, $safePayload);
     }
 
     /**

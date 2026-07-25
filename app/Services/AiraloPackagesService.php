@@ -8,7 +8,6 @@ use Illuminate\Support\Facades\Cache;
 class AiraloPackagesService
 {
     private const CACHE_KEY_ALL_PACKAGES = 'airalo:packages:catalog:v1';
-    private const CACHE_TTL_HOURS = 1;
 
     public function __construct(private readonly AiraloApiClientService $apiClient)
     {
@@ -67,7 +66,7 @@ class AiraloPackagesService
 
     public function invalidateCatalogCache(): void
     {
-        Cache::forget(self::CACHE_KEY_ALL_PACKAGES);
+        Cache::forget($this->catalogCacheKey());
     }
 
     /**
@@ -123,7 +122,7 @@ class AiraloPackagesService
     private function getCachedRawPackages(): array
     {
         /** @var array<int, array<string, mixed>> $cached */
-        $cached = Cache::remember(self::CACHE_KEY_ALL_PACKAGES, now()->addHours(self::CACHE_TTL_HOURS), function (): array {
+        $cached = Cache::remember($this->catalogCacheKey(), now()->addMinutes($this->catalogCacheTtlMinutes()), function (): array {
             $typedCatalogs = [];
             foreach (['local', 'global'] as $type) {
                 $response = $this->apiClient->getPackagesByType($type);
@@ -158,6 +157,16 @@ class AiraloPackagesService
         });
 
         return $cached;
+    }
+
+    private function catalogCacheTtlMinutes(): int
+    {
+        return max(1, (int) config('services.airalo.catalog_cache_ttl_minutes', 60));
+    }
+
+    private function catalogCacheKey(): string
+    {
+        return self::CACHE_KEY_ALL_PACKAGES . ':' . (string) config('app.env', 'production');
     }
 
     /**
@@ -215,8 +224,9 @@ class AiraloPackagesService
                         'iso_code' => (string) ($entry['country_code'] ?? $entry['iso_code'] ?? ''),
                         'countries' => $operator['countries'] ?? $entry['countries'] ?? [],
                         'slug' => (string) ($entry['slug'] ?? ''),
+                        'amount_mb' => $package['amount_mb'] ?? null,
                         'data_amount' => $package['amount'] ?? $package['data_amount'] ?? $package['dataAmount'] ?? null,
-                        'data_unit' => 'GB',
+                        'data_unit' => $package['data_unit'] ?? $package['dataUnit'] ?? $package['unit'] ?? '',
                         'data' => $package['data'] ?? $package['amount'] ?? null,
                         'validity_days' => $package['day'] ?? $package['validity_days'] ?? null,
                         'price' => $price,
@@ -531,6 +541,11 @@ class AiraloPackagesService
     private function extractDataVolumeAndUnit(array $item): array
     {
         $unit = strtoupper((string) ($item['data_unit'] ?? $item['dataUnit'] ?? ''));
+
+        $amountMb = $item['amount_mb'] ?? null;
+        if (is_numeric($amountMb)) {
+            return [(float) $amountMb / 1024, 'GB'];
+        }
 
         $volumeRaw = $item['data_amount']
             ?? $item['dataAmount']

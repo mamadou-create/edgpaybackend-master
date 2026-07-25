@@ -67,6 +67,9 @@ return [
         'base_url' => env('AIRALO_BASE_URL', 'https://partners-api.airalo.com'),
         'client_id' => env('AIRALO_CLIENT_ID'),
         'client_secret' => env('AIRALO_CLIENT_SECRET'),
+        'timeout' => (int) env('AIRALO_TIMEOUT', 20),
+        'retry_attempts' => (int) env('AIRALO_RETRY_ATTEMPTS', 3),
+        'catalog_cache_ttl_minutes' => (int) env('AIRALO_CATALOG_CACHE_TTL_MINUTES', 60),
     ],
 
     'mobile_money' => [

@@ -3,13 +3,15 @@
 namespace App\Services;
 
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 class AiraloAuthService
 {
     private const CACHE_KEY_PREFIX = 'airalo:oauth:access_token';
-    private const DEFAULT_CACHE_TTL_SECONDS = 3300;
+    private const DEFAULT_CACHE_TTL_SECONDS = 86100;
 
     private string $baseUrl;
     private string $clientId;
@@ -36,7 +38,11 @@ class AiraloAuthService
         if (!$forceRefresh) {
             $cachedToken = Cache::get($this->cacheKey());
             if (is_string($cachedToken) && $cachedToken !== '') {
-                return $cachedToken;
+                try {
+                    return Crypt::decryptString($cachedToken);
+                } catch (\Throwable) {
+                    Cache::forget($this->cacheKey());
+                }
             }
         }
 
@@ -58,7 +64,8 @@ class AiraloAuthService
         try {
             $response = Http::acceptJson()
                 ->asForm()
-                ->timeout(15)
+                ->timeout($this->timeoutSeconds())
+                ->retry($this->retryAttempts(), 100, throw: false)
                 ->post($url, [
                     'client_id' => $this->clientId,
                     'client_secret' => $this->clientSecret,
@@ -73,7 +80,7 @@ class AiraloAuthService
                 }
 
                 $apiMessage = is_array($payload)
-                    ? (string) ($payload['message'] ?? $payload['error_description'] ?? $payload['error'] ?? 'Unknown Airalo error')
+                    ? (string) ($payload['meta']['message'] ?? $payload['message'] ?? $payload['error_description'] ?? $payload['error'] ?? 'Unknown Airalo error')
                     : 'Unknown Airalo error';
 
                 throw new RuntimeException(
@@ -87,7 +94,12 @@ class AiraloAuthService
             }
 
             $ttlSeconds = $this->extractTokenCacheTtlSeconds($payload);
-            Cache::put($this->cacheKey(), $accessToken, now()->addSeconds($ttlSeconds));
+            Cache::put(
+                $this->cacheKey(),
+                Crypt::encryptString($accessToken),
+                now()->addSeconds($ttlSeconds),
+            );
+            Log::info('Airalo token refreshed.', ['environment' => $this->environment]);
 
             return $accessToken;
         } catch (RuntimeException $exception) {
@@ -163,14 +175,23 @@ class AiraloAuthService
             return self::DEFAULT_CACHE_TTL_SECONDS;
         }
 
-        // Buffer d'une minute pour eviter d'utiliser un token en limite d'expiration.
-        $ttlWithBuffer = $expiresIn - 60;
+        // Five-minute buffer prevents a token from expiring during an upstream request.
+        $ttlWithBuffer = $expiresIn - 300;
 
-        // Evite un TTL trop court en cas de reponse API anormale.
-        if ($ttlWithBuffer < 300) {
-            return 300;
+        if ($ttlWithBuffer < 60) {
+            return 60;
         }
 
         return $ttlWithBuffer;
+    }
+
+    private function timeoutSeconds(): int
+    {
+        return max(1, (int) config('services.airalo.timeout', 20));
+    }
+
+    private function retryAttempts(): int
+    {
+        return max(1, (int) config('services.airalo.retry_attempts', 3));
     }
 }

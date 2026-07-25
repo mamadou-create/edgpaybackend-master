@@ -29,13 +29,11 @@ class AiraloPackageController extends Controller
 
             return response()->json([
                 'success' => true,
+                'message' => 'Forfaits eSIM récupérés.',
                 'data' => array_map(static fn ($package): array => $package->toArray(), $packages),
             ], 200);
         } catch (AiraloApiException $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Erreur lors de la récupération des forfaits Airalo: ' . $exception->getMessage(),
-            ], 500);
+            return $this->airaloError($exception, 'Les forfaits eSIM sont indisponibles.');
         } catch (\Throwable $exception) {
             return response()->json([
                 'success' => false,
@@ -49,13 +47,11 @@ class AiraloPackageController extends Controller
         try {
             return response()->json([
                 'success' => true,
+                'message' => 'Destinations eSIM récupérées.',
                 'data' => $this->packagesService->getCountries(),
             ]);
         } catch (AiraloApiException $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Erreur lors de la récupération des destinations Airalo: ' . $exception->getMessage(),
-            ], 500);
+            return $this->airaloError($exception, 'Les destinations eSIM sont indisponibles.');
         } catch (\Throwable $exception) {
             return response()->json([
                 'success' => false,
@@ -71,13 +67,11 @@ class AiraloPackageController extends Controller
 
             return response()->json([
                 'success' => true,
+                'message' => 'Forfaits mondiaux récupérés.',
                 'data' => array_map(static fn ($package): array => $package->toArray(), $packages),
             ], 200);
         } catch (AiraloApiException $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Erreur lors de la récupération des forfaits globaux Airalo: ' . $exception->getMessage(),
-            ], 500);
+            return $this->airaloError($exception, 'Les forfaits mondiaux sont indisponibles.');
         } catch (\Throwable $exception) {
             return response()->json([
                 'success' => false,
@@ -93,18 +87,27 @@ class AiraloPackageController extends Controller
 
             return response()->json([
                 'success' => true,
+                'message' => 'Forfaits régionaux récupérés.',
                 'data' => array_map(static fn ($package): array => $package->toArray(), $packages),
             ], 200);
         } catch (AiraloApiException $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Erreur lors de la récupération des forfaits régionaux Airalo: ' . $exception->getMessage(),
-            ], 500);
+            return $this->airaloError($exception, 'Les forfaits régionaux sont indisponibles.');
         } catch (\Throwable $exception) {
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur interne lors de la récupération des forfaits régionaux.',
             ], 500);
         }
+    }
+
+    private function airaloError(AiraloApiException $exception, string $message): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'status' => $exception->statusCode(),
+            'message' => $message,
+            'airalo_message' => $exception->airaloMessage(),
+            'code' => $exception->errorCode(),
+        ], $exception->statusCode());
     }
 }

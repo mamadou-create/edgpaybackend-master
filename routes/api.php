@@ -150,13 +150,13 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
             ->middleware(['idempotency:reloadly-airtime,900', 'throttle:20,1']);
     });
 
-    Route::prefix('airalo/packages')->group(function () {
+    Route::prefix('airalo/packages')->middleware('throttle:30,1')->group(function () {
         Route::get('/country/{countryCode}', [AiraloPackageController::class, 'country']);
         Route::get('/global', [AiraloPackageController::class, 'global']);
         Route::get('/regional', [AiraloPackageController::class, 'regional']);
     });
 
-    Route::prefix('airalo')->group(function () {
+    Route::prefix('airalo')->middleware('throttle:30,1')->group(function () {
         Route::get('/countries', [AiraloPackageController::class, 'countries']);
         Route::get('/orders', [AiraloOrderController::class, 'index']);
         Route::get('/orders/{id}', [AiraloOrderController::class, 'show'])->whereNumber('id');

@@ -3,6 +3,7 @@
 namespace Tests\Feature\Admin;
 
 use App\Mail\AdminDocumentDispatchMail;
+use App\Models\Role;
 use App\Models\User;
 use App\Services\WhatsApp\WhatsAppCloudApiService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -17,7 +18,7 @@ class AdminDocumentDispatchTest extends TestCase
     {
         Mail::fake();
 
-        $user = User::factory()->create();
+        $user = $this->createSuperAdminUser();
         $this->actingAs($user, 'api');
 
         $response = $this->postJson('/api/v1/admin-document-dispatch', [
@@ -44,7 +45,7 @@ class AdminDocumentDispatchTest extends TestCase
 
     public function test_admin_can_send_document_by_whatsapp(): void
     {
-        $user = User::factory()->create();
+        $user = $this->createSuperAdminUser();
         $this->actingAs($user, 'api');
 
         $this->mock(WhatsAppCloudApiService::class, function ($mock): void {
@@ -74,5 +75,21 @@ class AdminDocumentDispatchTest extends TestCase
             ->assertOk()
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.channel', 'whatsapp');
+    }
+
+    private function createSuperAdminUser(): User
+    {
+        $role = Role::query()->updateOrCreate(
+            ['slug' => 'super-admin'],
+            [
+                'name' => 'Super Admin',
+                'description' => 'Role super admin (tests)',
+                'is_super_admin' => true,
+            ]
+        );
+
+        return User::factory()->create([
+            'role_id' => $role->id,
+        ]);
     }
 }

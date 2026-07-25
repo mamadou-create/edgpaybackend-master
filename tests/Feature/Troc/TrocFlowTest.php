@@ -117,7 +117,8 @@ class TrocFlowTest extends TestCase
 
         $this->assertSame(2349000.0, (float) $response->json('data.base_price'));
         $this->assertSame(843900.0, (float) $response->json('data.total_deduction'));
-        $this->assertSame(1505100.0, (float) $response->json('data.estimated_price'));
+        // L'estimation est bornee par la politique de rentabilite (max_profitable_buyback).
+        $this->assertSame(1152750.0, (float) $response->json('data.estimated_price'));
 
         $deductionLabels = collect($response->json('data.deductions'))->pluck('label')->all();
 
