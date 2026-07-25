@@ -442,6 +442,11 @@ class User extends Authenticatable implements JWTSubject
         return $this->hasMany(AnomalyFlag::class, 'user_id');
     }
 
+    public function airaloOrders(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(AiraloOrder::class, 'user_id');
+    }
+
     public function auditLogs(): \Illuminate\Database\Eloquent\Relations\HasMany
     {
         return $this->hasMany(AuditLog::class, 'user_id');

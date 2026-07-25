@@ -62,6 +62,13 @@ return [
         'timeout' => (int) env('RELOADLY_TIMEOUT', 15),
     ],
 
+    'airalo' => [
+        'env' => env('AIRALO_ENV', 'production'),
+        'base_url' => env('AIRALO_BASE_URL', 'https://partners-api.airalo.com'),
+        'client_id' => env('AIRALO_CLIENT_ID'),
+        'client_secret' => env('AIRALO_CLIENT_SECRET'),
+    ],
+
     'mobile_money' => [
         'allow_unsigned_local' => filter_var(env('MM_ALLOW_UNSIGNED_LOCAL', false), FILTER_VALIDATE_BOOLEAN),
         'providers' => [
