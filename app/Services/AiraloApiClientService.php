@@ -123,23 +123,7 @@ class AiraloApiClientService
      */
     public function getOrder(string $orderId): array
     {
-        return $this->get('/v2/orders/' . rawurlencode($orderId));
-    }
-
-    /**
-     * @throws AiraloApiException
-     */
-    public function getOrderInstructions(string $orderId): array
-    {
-        return $this->get('/v2/orders/' . rawurlencode($orderId) . '/instructions');
-    }
-
-    /**
-     * @throws AiraloApiException
-     */
-    public function getOrderSims(string $orderId): array
-    {
-        return $this->get('/v2/orders/' . rawurlencode($orderId) . '/sims');
+        return $this->get('/v2/orders/' . rawurlencode($orderId), ['include' => 'sims']);
     }
 
     /**
@@ -153,9 +137,17 @@ class AiraloApiClientService
     /**
      * @throws AiraloApiException
      */
-    public function getSimInstructions(string $iccid): array
+    public function getSimInstructions(string $iccid, string $language = 'fr'): array
     {
-        return $this->get('/v2/sims/' . rawurlencode($iccid) . '/instructions');
+        $normalizedLanguage = trim($language);
+
+        return $this->request(
+            'GET',
+            '/v2/sims/' . rawurlencode($iccid) . '/instructions',
+            [],
+            false,
+            $normalizedLanguage === '' ? [] : ['Accept-Language' => $normalizedLanguage],
+        );
     }
 
     /**
@@ -179,15 +171,13 @@ class AiraloApiClientService
     /**
      * @throws AiraloApiException
      */
-    public function getSims(array $query = []): array
-    {
-        return $this->get('/v2/sims', $query);
-    }
-
-    /**
-     * @throws AiraloApiException
-     */
-    private function request(string $method, string $endpoint, array $data = [], bool $hasRetriedAfterUnauthorized = false): array
+    private function request(
+        string $method,
+        string $endpoint,
+        array $data = [],
+        bool $hasRetriedAfterUnauthorized = false,
+        array $headers = [],
+    ): array
     {
         if ($this->baseUrl === '') {
             throw new AiraloApiException(500, 'Airalo configuration error: AIRALO_BASE_URL is missing.');
@@ -197,7 +187,7 @@ class AiraloApiClientService
         $url = $this->baseUrl . '/' . ltrim($endpoint, '/');
 
         try {
-            $request = $this->buildRequest($token);
+            $request = $this->buildRequest($token, $headers);
             try {
                 $response = match (strtoupper($method)) {
                     'GET' => $request->get($url, $data),
@@ -208,10 +198,12 @@ class AiraloApiClientService
                 $response = $exception->response;
             }
 
+            $this->logHttpExchange($method, $url, $data, $response);
+
             if ($response->status() === 401 && !$hasRetriedAfterUnauthorized) {
                 $this->authService->invalidateTokenCache();
 
-                return $this->request($method, $endpoint, $data, true);
+                return $this->request($method, $endpoint, $data, true, $headers);
             }
 
             if (!$response->successful()) {
@@ -229,6 +221,9 @@ class AiraloApiClientService
         } catch (\Throwable $exception) {
             Log::warning('Airalo network request failed.', [
                 'endpoint' => $endpoint,
+                'method' => strtoupper($method),
+                'url' => $url,
+                'payload' => $this->redactSensitivePayload($data),
                 'exception_class' => $exception::class,
             ]);
             throw new AiraloApiException(
@@ -241,10 +236,11 @@ class AiraloApiClientService
         }
     }
 
-    private function buildRequest(string $token): PendingRequest
+    private function buildRequest(string $token, array $headers = []): PendingRequest
     {
         return Http::withToken($token)
             ->acceptJson()
+            ->withHeaders($headers)
             ->timeout(max(1, (int) config('services.airalo.timeout', 20)))
             ->retry(
                 max(1, (int) config('services.airalo.retry_attempts', 3)),
@@ -268,13 +264,7 @@ class AiraloApiClientService
         $payloadArray = is_array($payload) ? $payload : [];
         $safePayload = $this->redactSensitivePayload($payloadArray);
 
-        $apiMessage = (string) (
-            $safePayload['meta']['message']
-            ?? $safePayload['message']
-            ?? $safePayload['error_description']
-            ?? $safePayload['error']
-            ?? 'Unknown Airalo error'
-        );
+        $apiMessage = $this->extractApiMessage($safePayload);
         $safeApiMessage = $this->redactSensitiveText($apiMessage);
 
         $message = match ($status) {
@@ -290,9 +280,64 @@ class AiraloApiClientService
             'endpoint' => $endpoint,
             'status' => $status,
             'code' => 'AIRALO_' . $status,
+            'airalo_response' => $safePayload,
         ]);
 
         return new AiraloApiException($status, $message, $safeApiMessage, $safePayload);
+    }
+
+    /**
+     * Logs diagnostics without exposing OAuth tokens or eSIM activation data.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function logHttpExchange(string $method, string $url, array $payload, Response $response): void
+    {
+        $body = $response->json();
+        $safeBody = is_array($body)
+            ? $this->redactSensitivePayload($body)
+            : $this->redactSensitiveText($response->body());
+
+        Log::info('Airalo HTTP exchange', [
+            'method' => strtoupper($method),
+            'url' => $url,
+            'headers' => [
+                'Accept' => 'application/json',
+                'Authorization' => 'Bearer [REDACTED]',
+            ],
+            'payload' => $this->redactSensitivePayload($payload),
+            'status' => $response->status(),
+            'response_body' => $safeBody,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function extractApiMessage(array $payload): string
+    {
+        foreach (['message', 'reason', 'error_description', 'error', 'detail', 'title'] as $key) {
+            $value = $payload['meta'][$key] ?? $payload[$key] ?? null;
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return trim((string) $value);
+            }
+        }
+
+        $errors = $payload['errors'] ?? $payload['meta']['errors'] ?? null;
+        if (is_array($errors)) {
+            $messages = [];
+            array_walk_recursive($errors, static function (mixed $value) use (&$messages): void {
+                if (is_scalar($value) && trim((string) $value) !== '') {
+                    $messages[] = trim((string) $value);
+                }
+            });
+
+            if ($messages !== []) {
+                return implode('; ', array_unique($messages));
+            }
+        }
+
+        return 'Airalo did not provide an error message.';
     }
 
     /**
@@ -345,6 +390,11 @@ class AiraloApiClientService
             'smdp_address',
             'sm_dp_address',
             'direct_address',
+            'lpa',
+            'direct_apple_installation_url',
+            'smdp_address_and_activation_code',
+            'qr_code_data',
+            'qr_code',
         ];
 
         return in_array($key, $sensitiveKeys, true);

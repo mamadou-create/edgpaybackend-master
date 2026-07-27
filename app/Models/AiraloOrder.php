@@ -21,6 +21,8 @@ class AiraloOrder extends Model
         'airalo_order_id',
         'airalo_order_code',
         'iccid',
+        'airalo_sim_id',
+        'airalo_matching_id',
         'quantity',
         'price',
         'currency',
@@ -38,6 +40,8 @@ class AiraloOrder extends Model
             'validity_days' => 'integer',
             'price' => 'float',
             'iccid' => 'encrypted',
+            'airalo_sim_id' => 'integer',
+            'airalo_matching_id' => 'encrypted',
         ];
     }
 

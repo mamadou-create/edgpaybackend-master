@@ -59,9 +59,13 @@ class AiraloOrderController extends Controller
                 'data' => [
                     'order_id' => $order['order_id'] ?? null,
                     'iccid' => $order['iccid'] ?? null,
+                    'qrcode' => $order['qrcode'] ?? null,
                     'qrcode_url' => $order['qrcode_url'] ?? null,
+                    'lpa' => $order['smdp_address'] ?? null,
                     'smdp_address' => $order['smdp_address'] ?? null,
+                    'matching_id' => $order['matching_id'] ?? null,
                     'ac_code' => $order['ac_code'] ?? null,
+                    'direct_apple_installation_url' => $order['direct_apple_installation_url'] ?? null,
                 ],
             ], 200);
         } catch (InvalidArgumentException $exception) {

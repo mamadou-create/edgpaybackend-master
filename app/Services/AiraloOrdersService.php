@@ -48,106 +48,53 @@ class AiraloOrdersService
      * Retrieves installation material from Airalo on demand. It must not be
      * persisted locally because it contains eSIM activation credentials.
      *
-     * @return array<string, string|null>
+    * @return array<string, mixed>
      *
      * @throws AiraloApiException
      */
     public function getInstallationInstructions(AiraloOrder $order): array
     {
-        $airaloOrderReference = trim((string) ($order->airalo_order_code ?: $order->airalo_order_id));
-        if ($airaloOrderReference === '') {
+        $airaloOrderId = trim((string) $order->airalo_order_id);
+        if ($airaloOrderId === '') {
             throw new InvalidArgumentException('Les instructions d’installation ne sont pas disponibles pour cette commande.');
         }
 
-        $orderLookupReference = $airaloOrderReference;
-        try {
-            $response = $this->apiClient->getOrder($orderLookupReference);
-        } catch (AiraloApiException $exception) {
-            $numericOrderId = trim((string) $order->airalo_order_id);
-            if ($exception->statusCode() !== 404
-                || $numericOrderId === ''
-                || $numericOrderId === $orderLookupReference) {
-                throw $exception;
-            }
-
-            $orderLookupReference = $numericOrderId;
-            $response = $this->apiClient->getOrder($orderLookupReference);
-        }
+        $response = $this->apiClient->getOrder($airaloOrderId);
         $normalized = $this->normalizeOrderResponse($response);
-        $airaloOrderId = $normalized['order_id'] ?? $order->airalo_order_id ?? $airaloOrderReference;
         $this->persistAiraloIdentifiers($order, $normalized);
-        $orderIccid = $normalized['iccid'];
+        $simResponse = null;
+        $simInstructionsResponse = null;
+        $platformInstructions = ['ios' => [], 'android' => []];
 
-        if ($normalized['qrcode_url'] === null && $normalized['iccid'] !== null) {
-            $normalized = $this->mergeInstallationResponse(
-                $normalized,
-                $this->tryGetSimInstructions($normalized['iccid']),
-            );
+        if ($normalized['status'] !== null && !$this->isCompletedOrderStatus($normalized['status'])) {
+            return [
+                'order_id' => $normalized['order_id'] ?? $airaloOrderId,
+                'iccid' => $normalized['iccid'] ?? null,
+                'qrcode' => null,
+                'qrcode_url' => null,
+                'lpa' => null,
+                'smdp_address' => null,
+                'matching_id' => null,
+                'ac_code' => null,
+                'direct_apple_installation_url' => null,
+                'ios_instructions' => [],
+                'android_instructions' => [],
+                'instructions_status' => 'pending',
+                'guide_url' => null,
+                'instructions_html' => null,
+                '_debug_airalo_response' => $this->redactInstallationPayload($response),
+            ];
         }
+        if ($normalized['iccid'] !== null) {
+            $simResponse = $this->tryGetSim($normalized['iccid']);
+            $normalized = $this->mergeInstallationResponse($normalized, $simResponse);
+            $simInstructionsResponse = $this->tryGetSimInstructions($normalized['iccid']);
+            $normalized = $this->mergeInstallationResponse($normalized, $simInstructionsResponse);
+            $platformInstructions = $this->normalizePlatformInstructions($simInstructionsResponse);
 
-        if ($normalized['qrcode_url'] === null && $normalized['iccid'] !== null) {
-            $normalized = $this->mergeInstallationResponse(
-                $normalized,
-                $this->tryGetSim($normalized['iccid']),
-            );
-        }
-
-        if ($normalized['qrcode_url'] === null) {
-            $normalized = $this->mergeInstallationResponse(
-                $normalized,
-                $this->tryGetOrderSims($orderLookupReference),
-            );
-        }
-
-        $associationIccid = $normalized['iccid'];
-        if ($normalized['qrcode_url'] === null
-            && $orderIccid === null
-            && $associationIccid !== null) {
-            $normalized = $this->mergeInstallationResponse(
-                $normalized,
-                $this->tryGetSimInstructions($associationIccid),
-            );
-        }
-
-        if ($normalized['qrcode_url'] === null
-            && $orderIccid === null
-            && $associationIccid !== null) {
-            $normalized = $this->mergeInstallationResponse(
-                $normalized,
-                $this->tryGetSim($associationIccid),
-            );
-        }
-
-        if ($normalized['qrcode_url'] === null) {
-            $normalized = $this->mergeInstallationResponse(
-                $normalized,
-                $this->tryGetOrderInstructions($airaloOrderId),
-            );
-        }
-
-        if ($normalized['qrcode_url'] === null) {
-            $normalized = $this->mergeInstallationResponse(
-                $normalized,
-                $this->findMatchingSimFromList($order, $airaloOrderId, $normalized['iccid']),
-            );
-        }
-
-        if ($normalized['qrcode_url'] === null
-            && $associationIccid === null
-            && $normalized['iccid'] !== null) {
-            $normalized = $this->mergeInstallationResponse(
-                $normalized,
-                $this->tryGetSimInstructions($normalized['iccid']),
-            );
-        }
-
-        if ($normalized['qrcode_url'] === null
-            && $associationIccid === null
-            && $normalized['iccid'] !== null) {
-            $normalized = $this->mergeInstallationResponse(
-                $normalized,
-                $this->tryGetSim($normalized['iccid']),
-            );
+            if ($normalized['qrcode_url'] === null) {
+                $normalized = $this->retrieveSimProfileWithRetry($normalized, $normalized['iccid']);
+            }
         }
 
         if ($normalized['qrcode_url'] === null) {
@@ -155,10 +102,6 @@ class AiraloOrdersService
                 'airalo_order_id' => $airaloOrderId,
                 'keys' => array_keys($this->toArray($response['data'] ?? null)),
             ]);
-        }
-
-        if ($normalized['iccid'] === null) {
-            $this->logLatestSimIds($airaloOrderId);
         }
 
         $this->persistAiraloIdentifiers($order, $normalized);
@@ -174,13 +117,23 @@ class AiraloOrdersService
         return [
             'order_id' => $normalized['order_id'] ?? $airaloOrderId,
             'iccid' => $normalized['iccid'] ?? null,
+            'qrcode' => $normalized['qrcode'] ?? null,
             'qrcode_url' => $normalized['qrcode_url'] ?? null,
+            'lpa' => $normalized['smdp_address'] ?? null,
             'smdp_address' => $normalized['smdp_address'] ?? null,
+            'matching_id' => $normalized['matching_id'] ?? null,
             'ac_code' => $normalized['ac_code'] ?? null,
+            'direct_apple_installation_url' => $normalized['direct_apple_installation_url'] ?? null,
+            'ios_instructions' => $platformInstructions['ios'],
+            'android_instructions' => $platformInstructions['android'],
             'instructions_status' => $instructionsStatus,
             'guide_url' => $guide['guide_url'] ?? null,
             'instructions_html' => $guide['instructions_html'] ?? null,
-            '_debug_airalo_response' => $this->redactInstallationPayload($response),
+            '_debug_airalo_response' => $this->redactInstallationPayload([
+                'order' => $response,
+                'sim' => $simResponse,
+                'sim_instructions' => $simInstructionsResponse,
+            ]),
         ];
     }
 
@@ -237,6 +190,13 @@ class AiraloOrdersService
         if (($order->iccid === null || $order->iccid === '') && ($normalized['iccid'] ?? null) !== null) {
             $updates['iccid'] = $normalized['iccid'];
         }
+        if ($order->airalo_sim_id === null && ($normalized['sim_id'] ?? null) !== null) {
+            $updates['airalo_sim_id'] = $normalized['sim_id'];
+        }
+        if (($order->airalo_matching_id === null || $order->airalo_matching_id === '')
+            && ($normalized['matching_id'] ?? null) !== null) {
+            $updates['airalo_matching_id'] = $normalized['matching_id'];
+        }
 
         if ($updates !== []) {
             $order->forceFill($updates)->save();
@@ -275,13 +235,43 @@ class AiraloOrdersService
         }
 
         $candidate = $this->normalizeOrderResponse($response);
-        foreach (['iccid', 'qrcode_url', 'smdp_address', 'ac_code'] as $key) {
+        foreach (['iccid', 'sim_id', 'matching_id', 'qrcode', 'qrcode_url', 'smdp_address', 'ac_code', 'direct_apple_installation_url'] as $key) {
             if (($base[$key] ?? null) === null && ($candidate[$key] ?? null) !== null) {
                 $base[$key] = $candidate[$key];
             }
         }
 
         return $base;
+    }
+
+    /**
+     * Airalo can create a completed order before the activation profile is
+     * available. Retry only the profile endpoints and keep the wait bounded.
+     *
+     * @param array<string, mixed> $normalized
+     * @return array<string, mixed>
+     */
+    private function retrieveSimProfileWithRetry(array $normalized, string $iccid): array
+    {
+        for ($attempt = 1; $attempt <= 3 && $normalized['qrcode_url'] === null; $attempt++) {
+            $normalized = $this->mergeInstallationResponse(
+                $normalized,
+                $this->tryGetSim($iccid),
+            );
+            if ($normalized['qrcode_url'] !== null) {
+                break;
+            }
+
+            $normalized = $this->mergeInstallationResponse(
+                $normalized,
+                $this->tryGetSimInstructions($iccid),
+            );
+            if ($attempt < 3 && $normalized['qrcode_url'] === null) {
+                usleep($attempt * 500000);
+            }
+        }
+
+        return $normalized;
     }
 
     /**
@@ -309,109 +299,72 @@ class AiraloOrdersService
     }
 
     /**
-     * @return array<string, mixed>|null
+     * @param array<string, mixed>|null $response
+     * @return array{ios: array<int, array<string, mixed>>, android: array<int, array<string, mixed>>}
      */
-    private function tryGetOrderInstructions(string $airaloOrderId): ?array
+    private function normalizePlatformInstructions(?array $response): array
     {
-        try {
-            return $this->apiClient->getOrderInstructions($airaloOrderId);
-        } catch (AiraloApiException) {
-            return null;
+        if ($response === null) {
+            return ['ios' => [], 'android' => []];
         }
+
+        $payload = $this->extractOrderPayload($response);
+        $instructions = $this->toArray($payload['instructions'] ?? null);
+
+        return [
+            'ios' => $this->normalizePlatformInstructionEntries($instructions['ios'] ?? null),
+            'android' => $this->normalizePlatformInstructionEntries($instructions['android'] ?? null),
+        ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function normalizePlatformInstructionEntries(mixed $entries): array
+    {
+        $items = $this->toArray($entries);
+        if ($items !== [] && !array_is_list($items)) {
+            $items = [$items];
+        }
+
+        return array_values(array_filter(array_map(function (mixed $entry): array {
+            $device = $this->toArray($entry);
+            $qrInstallation = $this->toArray($device['installation_via_qr_code'] ?? null);
+            $manualInstallation = $this->toArray($device['installation_manual'] ?? null);
+            $networkSetup = $this->toArray($device['network_setup'] ?? null);
+
+            return array_filter([
+                'model' => $this->firstString($device, ['model']),
+                'version' => $this->firstString($device, ['version']),
+                'qr_steps' => $this->normalizeInstructionSteps($qrInstallation['steps'] ?? null),
+                'manual_steps' => $this->normalizeInstructionSteps($manualInstallation['steps'] ?? null),
+                'network_steps' => $this->normalizeInstructionSteps($networkSetup['steps'] ?? null),
+                'direct_apple_installation_url' => $this->firstString(
+                    $device,
+                    ['direct_apple_installation_url'],
+                ),
+            ], static fn (mixed $value): bool => $value !== null && $value !== []);
+        }, $items), static fn (array $entry): bool => $entry !== []));
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function normalizeInstructionSteps(mixed $steps): array
+    {
+        if (!is_array($steps)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(
+            static fn (mixed $step): string => is_scalar($step) ? trim((string) $step) : '',
+            $steps,
+        ), static fn (string $step): bool => $step !== ''));
     }
 
     /**
      * @return array<string, mixed>|null
      */
-    private function tryGetOrderSims(string $airaloOrderId): ?array
-    {
-        try {
-            return $this->apiClient->getOrderSims($airaloOrderId);
-        } catch (AiraloApiException) {
-            return null;
-        }
-    }
-
-    /**
-     * @return array<string, mixed>|null
-     */
-    private function findMatchingSimFromList(AiraloOrder $order, string $airaloOrderId, ?string $iccid): ?array
-    {
-        try {
-            $response = $this->apiClient->getSims([
-                'filter[order_id]' => $airaloOrderId,
-                'order_id' => $airaloOrderId,
-                'limit' => 10,
-            ]);
-        } catch (AiraloApiException) {
-            return null;
-        }
-
-        $data = $this->toArray($response['data'] ?? null);
-        $candidates = $this->toArray($data['sims'] ?? null);
-        if ($candidates === []) {
-            $candidates = $data;
-        }
-        if (!array_is_list($candidates)) {
-            $candidates = [$candidates];
-        }
-
-        foreach ($candidates as $candidate) {
-            if (!is_array($candidate)) {
-                continue;
-            }
-
-            $candidateIccid = $this->firstString($candidate, ['iccid']);
-            if ($iccid !== null && $candidateIccid === $iccid) {
-                return ['data' => $candidate];
-            }
-
-            $candidateOrderId = $this->firstScalarString($candidate, ['order_id', 'orderId']);
-            $nestedOrder = $this->toArray($candidate['order'] ?? null);
-            $candidateOrderId ??= $this->firstScalarString($nestedOrder, ['id', 'order_id']);
-            if ($candidateOrderId === $airaloOrderId) {
-                return ['data' => $candidate];
-            }
-        }
-
-        return null;
-    }
-
-    private function logLatestSimIds(string $airaloOrderId): void
-    {
-        try {
-            $response = $this->apiClient->getSims(['limit' => 5]);
-        } catch (AiraloApiException) {
-            return;
-        }
-
-        $data = $this->toArray($response['data'] ?? null);
-        $candidates = $this->toArray($data['sims'] ?? null);
-        if ($candidates === []) {
-            $candidates = $data;
-        }
-        if (!array_is_list($candidates)) {
-            $candidates = [$candidates];
-        }
-
-        $iccids = [];
-        foreach ($candidates as $candidate) {
-            if (!is_array($candidate)) {
-                continue;
-            }
-
-            $iccid = $this->firstString($candidate, ['iccid']);
-            if ($iccid !== null) {
-                $iccids[] = $iccid;
-            }
-        }
-
-        Log::warning('Airalo latest SIMs IDs', [
-            'airalo_order_id' => $airaloOrderId,
-            'iccids' => array_slice($iccids, 0, 5),
-        ]);
-    }
-
     /**
      * @return array<string, mixed>
      *
@@ -497,6 +450,8 @@ class AiraloOrdersService
                 'airalo_order_id' => $airaloOrderId,
                 'airalo_order_code' => $normalized['order_code'] ?? null,
                 'iccid' => $normalized['iccid'] ?? null,
+                'airalo_sim_id' => $normalized['sim_id'] ?? null,
+                'airalo_matching_id' => $normalized['matching_id'] ?? null,
                 'quantity' => $quantity,
                 'price' => $unitPrice,
                 'currency' => $this->extractPackageCurrency($package),
@@ -737,37 +692,56 @@ class AiraloOrdersService
     {
         $order = $this->extractOrderPayload($response);
         $sims = $this->toArray($order['sims'] ?? null);
-        $subscriptions = $this->toArray($order['subscriptions'] ?? null);
+        $sim = $this->toArray($sims[0] ?? null);
+        $instructions = $this->toArray($order['instructions'] ?? null);
+        $ios = $this->toArray($instructions['ios'] ?? null);
+        $android = $this->toArray($instructions['android'] ?? null);
+        $iosInstructions = $this->toArray($ios[0] ?? null);
+        $androidInstructions = $this->toArray($android[0] ?? null);
+        $iosQrInstallation = $this->toArray($iosInstructions['installation_via_qr_code'] ?? null);
+        $androidQrInstallation = $this->toArray($androidInstructions['installation_via_qr_code'] ?? null);
+        $iosManualInstallation = $this->toArray($iosInstructions['installation_manual'] ?? null);
+        $androidManualInstallation = $this->toArray($androidInstructions['installation_manual'] ?? null);
         $sources = [
-            $this->toArray($sims[0] ?? null),
-            $this->toArray($subscriptions[0] ?? null),
-            $this->toArray($order['esim'] ?? null),
-            $this->toArray($order['instructions'] ?? null),
-            $this->toArray($order['installation'] ?? null),
-            $this->toArray($order['install'] ?? null),
-            $this->toArray($order['activation'] ?? null),
-            $this->toArray($order['sim'] ?? null),
+            $sim,
+            $iosQrInstallation,
+            $androidQrInstallation,
+            $iosManualInstallation,
+            $androidManualInstallation,
             $order,
         ];
 
         return [
             'order_id' => $this->firstScalarString($order, ['id', 'order_id', 'uuid', 'code']),
             'order_code' => $this->firstString($order, ['code']),
+            'status' => $this->firstString($order, ['status', 'order_status']),
             'iccid' => $this->firstStringFromSources($sources, ['iccid']),
+            'sim_id' => $this->firstScalarString($sim, ['id']),
+            'matching_id' => $this->firstStringFromSources($sources, ['matching_id']),
+            'qrcode' => $this->firstStringFromSources($sources, ['qrcode', 'qr_code_data']),
             'qrcode_url' => $this->firstStringFromSources(
                 $sources,
-                ['qrcode_url', 'qr_code_url', 'qrCodeUrl', 'qr_code', 'qrcode'],
+                ['qrcode_url', 'qr_code_url'],
             ),
             'smdp_address' => $this->firstStringFromSources(
                 $sources,
-                ['smdp_address', 'sm_dp_address', 'smdpAddress', 'direct_address'],
+                ['lpa', 'smdp_address', 'sm_dp_address', 'smdp_address_and_activation_code'],
             ),
             'ac_code' => $this->firstStringFromSources(
                 $sources,
-                ['ac_code', 'activation_code', 'activationCode', 'matching_id'],
+                ['matching_id', 'activation_code'],
+            ),
+            'direct_apple_installation_url' => $this->firstStringFromSources(
+                $sources,
+                ['direct_apple_installation_url'],
             ),
             'raw' => $response,
         ];
+    }
+
+    private function isCompletedOrderStatus(string $status): bool
+    {
+        return in_array(strtolower(trim($status)), ['completed', 'complete', 'active', 'fulfilled'], true);
     }
 
     /**
@@ -874,14 +848,17 @@ class AiraloOrdersService
             'qrcode_url',
             'qr_code_url',
             'qr_code',
+            'qr_code_data',
             'qrcode',
+            'lpa',
             'smdp_address',
             'sm_dp_address',
-            'direct_address',
+            'smdp_address_and_activation_code',
             'ac_code',
             'activation_code',
             'matching_id',
             'iccid',
+            'direct_apple_installation_url',
         ];
         $redacted = [];
 

@@ -54,14 +54,15 @@ class AiraloOrderControllerTest extends TestCase
                 'data' => [
                     'id' => 1234567,
                     'code' => '20260725-1234567',
-                    'sim' => [
+                    'sims' => [[
+                        'id' => 2508142,
                         'iccid' => '8988211000000000001',
-                    ],
-                    'installation' => [
+                        'qrcode' => 'LPA:1$sm-dp.example$ACTIVATION',
                         'qrcode_url' => 'https://airalo.test/qr/ord-789',
-                        'smdp_address' => 'LPA:1$sm-dp.example$ACTIVATION',
-                        'ac_code' => 'ACTIVATION-CODE-123',
-                    ],
+                        'lpa' => 'sm-dp.example',
+                        'matching_id' => 'ACTIVATION-CODE-123',
+                        'direct_apple_installation_url' => 'https://airalo.test/apple/ord-789',
+                    ]],
                 ],
             ], 200),
         ]);
@@ -88,9 +89,11 @@ class AiraloOrderControllerTest extends TestCase
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.order_id', '1234567')
             ->assertJsonPath('data.iccid', '8988211000000000001')
+            ->assertJsonPath('data.qrcode', 'LPA:1$sm-dp.example$ACTIVATION')
             ->assertJsonPath('data.qrcode_url', 'https://airalo.test/qr/ord-789')
-            ->assertJsonPath('data.smdp_address', 'LPA:1$sm-dp.example$ACTIVATION')
-            ->assertJsonPath('data.ac_code', 'ACTIVATION-CODE-123');
+            ->assertJsonPath('data.smdp_address', 'sm-dp.example')
+            ->assertJsonPath('data.ac_code', 'ACTIVATION-CODE-123')
+            ->assertJsonPath('data.direct_apple_installation_url', 'https://airalo.test/apple/ord-789');
 
         $this->assertDatabaseHas('airalo_orders', [
             'user_id' => $user->id,
@@ -109,6 +112,8 @@ class AiraloOrderControllerTest extends TestCase
         $this->assertTrue(Schema::hasColumn('airalo_orders', 'iccid'));
         $storedOrder = AiraloOrder::query()->sole();
         $this->assertSame('8988211000000000001', $storedOrder->iccid);
+        $this->assertSame(2508142, $storedOrder->airalo_sim_id);
+        $this->assertSame('ACTIVATION-CODE-123', $storedOrder->airalo_matching_id);
         $this->assertFalse(Schema::hasColumn('airalo_orders', 'qrcode_url'));
         $this->assertFalse(Schema::hasColumn('airalo_orders', 'smdp_address'));
         $this->assertFalse(Schema::hasColumn('airalo_orders', 'ac_code'));
@@ -282,15 +287,62 @@ class AiraloOrderControllerTest extends TestCase
                 'access_token' => 'airalo-token-xyz',
                 'expires_in' => 86400,
             ]),
-            'https://partners.airalo.test/v2/orders/ord-install-1' => Http::response([
+            'https://partners.airalo.test/v2/orders/ord-install-1*' => Http::response([
                 'data' => [
                     'id' => 'ord-install-1',
                     'sims' => [[
+                        'id' => 2508142,
                         'iccid' => '8988211000000000011',
-                        'qr_code' => 'https://airalo.test/qr/install-1',
-                        'direct_address' => 'LPA:1$sm-dp.example$ACTIVATION',
+                        'qrcode' => 'LPA:1$sm-dp.example$ACTIVATION',
+                        'qrcode_url' => 'https://airalo.test/qr/install-1',
+                        'lpa' => 'sm-dp.example',
                         'matching_id' => 'MATCHING-ID-123',
+                        'direct_apple_installation_url' => 'https://airalo.test/apple/install-1',
                     ]],
+                ],
+            ]),
+            'https://partners.airalo.test/v2/sims/8988211000000000011' => Http::response([
+                'data' => [
+                    'id' => 2508142,
+                    'iccid' => '8988211000000000011',
+                    'lpa' => 'sm-dp.example',
+                    'matching_id' => 'MATCHING-ID-123',
+                    'qrcode' => 'LPA:1$sm-dp.example$ACTIVATION',
+                    'qrcode_url' => 'https://airalo.test/qr/install-1',
+                    'direct_apple_installation_url' => 'https://airalo.test/apple/install-1',
+                ],
+            ]),
+            'https://partners.airalo.test/v2/sims/8988211000000000011/instructions' => Http::response([
+                'data' => [
+                    'instructions' => [
+                        'ios' => [[
+                            'model' => 'iPhone',
+                            'version' => 'iOS 18',
+                            'direct_apple_installation_url' => 'https://airalo.test/apple/install-1',
+                            'installation_via_qr_code' => [
+                                'steps' => ['Open Settings.', 'Scan the QR code.'],
+                            ],
+                            'installation_manual' => [
+                                'steps' => ['Enter the SM-DP+ address.'],
+                            ],
+                            'network_setup' => [
+                                'steps' => ['Enable data roaming.'],
+                            ],
+                        ]],
+                        'android' => [[
+                            'model' => 'Pixel',
+                            'version' => 'Android 15',
+                            'installation_via_qr_code' => [
+                                'steps' => ['Open Network settings.'],
+                            ],
+                            'installation_manual' => [
+                                'steps' => ['Enter the activation code.'],
+                            ],
+                            'network_setup' => [
+                                'steps' => ['Enable mobile data.'],
+                            ],
+                        ]],
+                    ],
                 ],
             ]),
         ]);
@@ -309,19 +361,31 @@ class AiraloOrderControllerTest extends TestCase
         $this->getJson('/api/v1/esim/orders/' . $order->id . '/instructions')
             ->assertOk()
             ->assertJsonPath('success', true)
+            ->assertJsonPath('data.qrcode', 'LPA:1$sm-dp.example$ACTIVATION')
             ->assertJsonPath('data.qrcode_url', 'https://airalo.test/qr/install-1')
-            ->assertJsonPath('data.smdp_address', 'LPA:1$sm-dp.example$ACTIVATION')
-            ->assertJsonPath('data.ac_code', 'MATCHING-ID-123');
+            ->assertJsonPath('data.lpa', 'sm-dp.example')
+            ->assertJsonPath('data.smdp_address', 'sm-dp.example')
+            ->assertJsonPath('data.matching_id', 'MATCHING-ID-123')
+            ->assertJsonPath('data.ac_code', 'MATCHING-ID-123')
+            ->assertJsonPath('data.direct_apple_installation_url', 'https://airalo.test/apple/install-1')
+            ->assertJsonPath('data.ios_instructions.0.qr_steps.0', 'Open Settings.')
+            ->assertJsonPath('data.android_instructions.0.network_steps.0', 'Enable mobile data.');
+
+        Http::assertSent(static fn ($request): bool => $request->url() === 'https://partners.airalo.test/v2/orders/ord-install-1?include=sims');
+        Http::assertSent(static fn ($request): bool => $request->url() === 'https://partners.airalo.test/v2/sims/8988211000000000011');
+        Http::assertSent(static fn ($request): bool => $request->url() === 'https://partners.airalo.test/v2/sims/8988211000000000011/instructions');
 
         Log::shouldHaveReceived('info')->withArgs(function (string $message, array $context): bool {
             return $message === 'Airalo eSIM installation instructions retrieved.'
                 && $context['airalo_status'] === 200
-                && $context['airalo_response']['data']['sims'][0]['qr_code'] === '[REDACTED]';
+                && $context['airalo_response']['order']['data']['sims'][0]['qrcode'] === '[REDACTED]'
+                && $context['airalo_response']['order']['data']['sims'][0]['iccid'] === '[REDACTED]'
+                && $context['airalo_response']['order']['data']['sims'][0]['matching_id'] === '[REDACTED]';
         })->once();
     }
 
     #[Test]
-    public function it_maps_installation_fields_across_esim_instructions_and_order_roots(): void
+    public function it_maps_installation_fields_from_documented_order_sims(): void
     {
         config([
             'services.airalo.base_url' => 'https://partners.airalo.test',
@@ -336,12 +400,17 @@ class AiraloOrderControllerTest extends TestCase
                 'access_token' => 'airalo-token-xyz',
                 'expires_in' => 86400,
             ]),
-            'https://partners.airalo.test/v2/orders/2192552' => Http::response([
+            'https://partners.airalo.test/v2/orders/2192552*' => Http::response([
                 'data' => [
                     'id' => 2192552,
-                    'esim' => ['qrcode_url' => 'https://airalo.test/qr/2192552'],
-                    'instructions' => ['direct_address' => 'LPA:1$sm-dp.example$ACTIVATION'],
-                    'matching_id' => 'MATCHING-ID-2192552',
+                    'sims' => [[
+                        'id' => 2508142,
+                        'iccid' => '8988211000000002192',
+                        'qrcode' => 'LPA:1$sm-dp.example$ACTIVATION',
+                        'qrcode_url' => 'https://airalo.test/qr/2192552',
+                        'lpa' => 'sm-dp.example',
+                        'matching_id' => 'MATCHING-ID-2192552',
+                    ]],
                 ],
             ]),
         ]);
@@ -360,7 +429,7 @@ class AiraloOrderControllerTest extends TestCase
         $this->getJson('/api/v1/esim/orders/' . $order->id . '/instructions')
             ->assertOk()
             ->assertJsonPath('data.qrcode_url', 'https://airalo.test/qr/2192552')
-            ->assertJsonPath('data.smdp_address', 'LPA:1$sm-dp.example$ACTIVATION')
+            ->assertJsonPath('data.smdp_address', 'sm-dp.example')
             ->assertJsonPath('data.ac_code', 'MATCHING-ID-2192552');
     }
 
@@ -380,15 +449,20 @@ class AiraloOrderControllerTest extends TestCase
                 'access_token' => 'airalo-token-xyz',
                 'expires_in' => 86400,
             ]),
-            'https://partners.airalo.test/v2/orders/2192552' => Http::response([
+            'https://partners.airalo.test/v2/orders/2192552*' => Http::response([
                 'data' => ['id' => 2192552, 'sims' => [['iccid' => '8988211000000002192']]],
             ]),
             'https://partners.airalo.test/v2/sims/8988211000000002192/instructions' => Http::response([
                 'data' => [
-                    'iccid' => '8988211000000002192',
-                    'qrcode_url' => 'https://airalo.test/qr/2192552',
-                    'direct_address' => 'LPA:1$sm-dp.example$ACTIVATION',
-                    'matching_id' => 'MATCHING-ID-2192552',
+                    'instructions' => [
+                        'ios' => [[
+                            'installation_via_qr_code' => [
+                                'qrcode_url' => 'https://airalo.test/qr/2192552',
+                                'lpa' => 'sm-dp.example',
+                                'matching_id' => 'MATCHING-ID-2192552',
+                            ],
+                        ]],
+                    ],
                 ],
             ]),
         ]);
@@ -407,14 +481,14 @@ class AiraloOrderControllerTest extends TestCase
         $this->getJson('/api/v1/esim/orders/' . $order->id . '/instructions')
             ->assertOk()
             ->assertJsonPath('data.qrcode_url', 'https://airalo.test/qr/2192552')
-            ->assertJsonPath('data.smdp_address', 'LPA:1$sm-dp.example$ACTIVATION')
+            ->assertJsonPath('data.smdp_address', 'sm-dp.example')
             ->assertJsonPath('data.ac_code', 'MATCHING-ID-2192552');
 
         Http::assertSent(static fn ($request): bool => $request->url() === 'https://partners.airalo.test/v2/sims/8988211000000002192/instructions');
     }
 
     #[Test]
-    public function it_falls_back_to_the_numeric_airalo_id_when_the_order_code_is_not_available(): void
+    public function it_uses_the_numeric_airalo_id_with_documented_sim_inclusion(): void
     {
         config([
             'services.airalo.base_url' => 'https://partners.airalo.test',
@@ -429,8 +503,7 @@ class AiraloOrderControllerTest extends TestCase
                 'access_token' => 'airalo-token-xyz',
                 'expires_in' => 86400,
             ]),
-            'https://partners.airalo.test/v2/orders/20260725-2192552' => Http::response([], 404),
-            'https://partners.airalo.test/v2/orders/2192552' => Http::response([
+            'https://partners.airalo.test/v2/orders/2192552*' => Http::response([
                 'data' => [
                     'id' => 2192552,
                     'sims' => [[
@@ -458,12 +531,11 @@ class AiraloOrderControllerTest extends TestCase
             ->assertJsonPath('data.iccid', '89852350326101080144')
             ->assertJsonPath('data.qrcode_url', 'https://airalo.test/qr/2192552');
 
-        Http::assertSent(static fn ($request): bool => $request->url() === 'https://partners.airalo.test/v2/orders/20260725-2192552');
-        Http::assertSent(static fn ($request): bool => $request->url() === 'https://partners.airalo.test/v2/orders/2192552');
+        Http::assertSent(static fn ($request): bool => $request->url() === 'https://partners.airalo.test/v2/orders/2192552?include=sims');
     }
 
     #[Test]
-    public function it_extracts_an_iccid_from_subscriptions_and_loads_its_sim_profile(): void
+    public function it_does_not_request_installation_data_before_airalo_marks_the_order_completed(): void
     {
         config([
             'services.airalo.base_url' => 'https://partners.airalo.test',
@@ -478,15 +550,54 @@ class AiraloOrderControllerTest extends TestCase
                 'access_token' => 'airalo-token-xyz',
                 'expires_in' => 86400,
             ]),
-            'https://partners.airalo.test/v2/orders/2192552' => Http::response([
-                'data' => ['id' => 2192552, 'subscriptions' => [['iccid' => '89852350326101340605']]],
+            'https://partners.airalo.test/v2/orders/2192607*' => Http::response([
+                'data' => ['id' => 2192607, 'status' => 'processing'],
             ]),
-            'https://partners.airalo.test/v2/sims/89852350326101340605/instructions' => Http::response([
-                'data' => [
+        ]);
+
+        $user = User::factory()->create();
+        $order = AiraloOrder::query()->create([
+            'user_id' => $user->id,
+            'package_id' => 'discover-in-1gb-5days-px',
+            'airalo_order_id' => '2192607',
+            'quantity' => 1,
+            'currency' => 'USD',
+            'status' => 'completed',
+        ]);
+        $this->actingAs($user, 'api');
+
+        $this->getJson('/api/v1/esim/orders/' . $order->id . '/instructions')
+            ->assertOk()
+            ->assertJsonPath('data.instructions_status', 'pending')
+            ->assertJsonPath('data.qrcode_url', null);
+
+        Http::assertSentCount(2);
+    }
+
+    #[Test]
+    public function it_persists_identifiers_from_documented_order_sims(): void
+    {
+        config([
+            'services.airalo.base_url' => 'https://partners.airalo.test',
+            'services.airalo.client_id' => 'airalo-client-id',
+            'services.airalo.client_secret' => 'airalo-client-secret',
+            'cache.default' => 'array',
+        ]);
+        Cache::forget('airalo:oauth:access_token');
+
+        Http::fake([
+            'https://partners.airalo.test/v2/token' => Http::response([
+                'access_token' => 'airalo-token-xyz',
+                'expires_in' => 86400,
+            ]),
+            'https://partners.airalo.test/v2/orders/2192552*' => Http::response([
+                'data' => ['id' => 2192552, 'sims' => [[
+                    'id' => 2508142,
+                    'iccid' => '89852350326101340605',
                     'qrcode_url' => 'https://airalo.test/qr/2192552',
-                    'smdp_address' => 'LPA:1$sm-dp.example$ACTIVATION',
-                    'activation_code' => 'ACTIVATION-CODE-2192552',
-                ],
+                    'lpa' => 'sm-dp.example',
+                    'matching_id' => 'ACTIVATION-CODE-2192552',
+                ]]],
             ]),
         ]);
 
@@ -505,12 +616,12 @@ class AiraloOrderControllerTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.iccid', '89852350326101340605')
             ->assertJsonPath('data.qrcode_url', 'https://airalo.test/qr/2192552')
-            ->assertJsonPath('data.smdp_address', 'LPA:1$sm-dp.example$ACTIVATION')
+            ->assertJsonPath('data.smdp_address', 'sm-dp.example')
             ->assertJsonPath('data.ac_code', 'ACTIVATION-CODE-2192552');
     }
 
     #[Test]
-    public function it_loads_the_matching_recent_sim_when_the_order_has_no_sim_array(): void
+    public function it_uses_only_documented_sim_endpoints_after_order_inclusion(): void
     {
         config([
             'services.airalo.base_url' => 'https://partners.airalo.test',
@@ -525,25 +636,26 @@ class AiraloOrderControllerTest extends TestCase
                 'access_token' => 'airalo-token-xyz',
                 'expires_in' => 86400,
             ]),
-            'https://partners.airalo.test/v2/orders/2192552' => Http::response([
-                'data' => ['id' => 2192552],
+            'https://partners.airalo.test/v2/orders/2192552*' => Http::response([
+                'data' => ['id' => 2192552, 'sims' => [[
+                    'id' => 2508142,
+                    'iccid' => '89852350326101340605',
+                    'qrcode_url' => 'https://airalo.test/qr/2192552',
+                    'lpa' => 'sm-dp.example',
+                    'matching_id' => 'MATCHING-ID-2192552',
+                ]]],
             ]),
-            'https://partners.airalo.test/v2/orders/2192552/sims' => Http::response([
-                'data' => [],
-            ]),
-            'https://partners.airalo.test/v2/orders/2192552/instructions' => Http::response([], 404),
-            'https://partners.airalo.test/v2/sims/89852350326101340605/instructions' => Http::response([
+            'https://partners.airalo.test/v2/sims/89852350326101340605' => Http::response([
                 'data' => [
-                    'qr_code' => 'https://airalo.test/qr/2192552',
-                    'direct_address' => 'LPA:1$sm-dp.example$ACTIVATION',
+                    'id' => 2508142,
+                    'iccid' => '89852350326101340605',
+                    'qrcode_url' => 'https://airalo.test/qr/2192552',
+                    'lpa' => 'sm-dp.example',
                     'matching_id' => 'MATCHING-ID-2192552',
                 ],
             ]),
-            'https://partners.airalo.test/v2/sims*' => Http::response([
-                'data' => [[
-                    'order_id' => 2192552,
-                    'iccid' => '89852350326101340605',
-                ]],
+            'https://partners.airalo.test/v2/sims/89852350326101340605/instructions' => Http::response([
+                'data' => ['instructions' => []],
             ]),
         ]);
 
@@ -562,18 +674,17 @@ class AiraloOrderControllerTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.iccid', '89852350326101340605')
             ->assertJsonPath('data.qrcode_url', 'https://airalo.test/qr/2192552')
-            ->assertJsonPath('data.smdp_address', 'LPA:1$sm-dp.example$ACTIVATION')
+            ->assertJsonPath('data.smdp_address', 'sm-dp.example')
             ->assertJsonPath('data.ac_code', 'MATCHING-ID-2192552');
 
-        Http::assertSent(static fn ($request): bool => $request->data() === [
-            'filter[order_id]' => '2192552',
-            'order_id' => '2192552',
-            'limit' => 10,
-        ]);
+        Http::assertSentCount(4);
+        Http::assertSent(static fn ($request): bool => $request->url() === 'https://partners.airalo.test/v2/orders/2192552?include=sims');
+        Http::assertSent(static fn ($request): bool => $request->url() === 'https://partners.airalo.test/v2/sims/89852350326101340605');
+        Http::assertSent(static fn ($request): bool => $request->url() === 'https://partners.airalo.test/v2/sims/89852350326101340605/instructions');
     }
 
     #[Test]
-    public function it_retrieves_an_iccid_from_the_order_sims_association_route(): void
+    public function it_retrieves_an_iccid_from_documented_order_sim_inclusion(): void
     {
         config([
             'services.airalo.base_url' => 'https://partners.airalo.test',
@@ -588,18 +699,14 @@ class AiraloOrderControllerTest extends TestCase
                 'access_token' => 'airalo-token-xyz',
                 'expires_in' => 86400,
             ]),
-            'https://partners.airalo.test/v2/orders/2192607' => Http::response([
-                'data' => ['id' => 2192607],
-            ]),
-            'https://partners.airalo.test/v2/orders/2192607/sims' => Http::response([
-                'data' => [['iccid' => '89852350326101340605']],
-            ]),
-            'https://partners.airalo.test/v2/sims/89852350326101340605/instructions' => Http::response([
-                'data' => [
-                    'qr_code' => 'https://airalo.test/qr/2192607',
-                    'direct_address' => 'LPA:1$sm-dp.example$ACTIVATION',
-                    'ac_code' => 'ACTIVATION-CODE-2192607',
-                ],
+            'https://partners.airalo.test/v2/orders/2192607*' => Http::response([
+                'data' => ['id' => 2192607, 'sims' => [[
+                    'id' => 2508142,
+                    'iccid' => '89852350326101340605',
+                    'qrcode_url' => 'https://airalo.test/qr/2192607',
+                    'lpa' => 'sm-dp.example',
+                    'matching_id' => 'ACTIVATION-CODE-2192607',
+                ]]],
             ]),
         ]);
 
@@ -618,12 +725,12 @@ class AiraloOrderControllerTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.iccid', '89852350326101340605')
             ->assertJsonPath('data.qrcode_url', 'https://airalo.test/qr/2192607')
-            ->assertJsonPath('data.smdp_address', 'LPA:1$sm-dp.example$ACTIVATION')
+            ->assertJsonPath('data.smdp_address', 'sm-dp.example')
             ->assertJsonPath('data.ac_code', 'ACTIVATION-CODE-2192607');
     }
 
     #[Test]
-    public function it_logs_latest_sim_ids_when_no_sim_is_found_for_the_order(): void
+    public function it_logs_available_order_keys_when_documented_order_sims_are_missing(): void
     {
         config([
             'services.airalo.base_url' => 'https://partners.airalo.test',
@@ -639,20 +746,8 @@ class AiraloOrderControllerTest extends TestCase
                 'access_token' => 'airalo-token-xyz',
                 'expires_in' => 86400,
             ]),
-            'https://partners.airalo.test/v2/orders/2192607' => Http::response([
+            'https://partners.airalo.test/v2/orders/2192607*' => Http::response([
                 'data' => ['id' => 2192607],
-            ]),
-            'https://partners.airalo.test/v2/orders/2192607/sims' => Http::response(['data' => []]),
-            'https://partners.airalo.test/v2/orders/2192607/instructions' => Http::response([], 404),
-            'https://partners.airalo.test/v2/sims*' => Http::response([
-                'data' => [
-                    ['iccid' => '89852350326101340001'],
-                    ['iccid' => '89852350326101340002'],
-                    ['iccid' => '89852350326101340003'],
-                    ['iccid' => '89852350326101340004'],
-                    ['iccid' => '89852350326101340005'],
-                    ['iccid' => '89852350326101340006'],
-                ],
             ]),
         ]);
 
@@ -670,15 +765,9 @@ class AiraloOrderControllerTest extends TestCase
         $this->getJson('/api/v1/esim/orders/' . $order->id . '/instructions')->assertOk();
 
         Log::shouldHaveReceived('warning')->withArgs(static function (string $message, array $context): bool {
-            return $message === 'Airalo latest SIMs IDs'
+            return $message === 'Airalo keys available'
                 && $context['airalo_order_id'] === '2192607'
-                && $context['iccids'] === [
-                    '89852350326101340001',
-                    '89852350326101340002',
-                    '89852350326101340003',
-                    '89852350326101340004',
-                    '89852350326101340005',
-                ];
+                && $context['keys'] === ['id'];
         })->once();
     }
 
@@ -698,9 +787,12 @@ class AiraloOrderControllerTest extends TestCase
                 'access_token' => 'airalo-token-xyz',
                 'expires_in' => 86400,
             ]),
-            'https://partners.airalo.test/v2/orders/2192552' => Http::response([
+            'https://partners.airalo.test/v2/orders/2192552*' => Http::response([
                 'data' => [
                     'id' => 2192552,
+                    'sims' => [[
+                        'iccid' => '8988211000000002192',
+                    ]],
                     'qrcode_installation' => '<p>Scan the QR code on another device.</p>',
                     'manual_installation' => '<p>Enable data roaming.</p>',
                     'installation_guides' => [
@@ -708,8 +800,8 @@ class AiraloOrderControllerTest extends TestCase
                     ],
                 ],
             ]),
-            'https://partners.airalo.test/v2/orders/2192552/instructions' => Http::response([], 404),
-            'https://partners.airalo.test/v2/sims*' => Http::response(['data' => []]),
+            'https://partners.airalo.test/v2/sims/8988211000000002192' => Http::response([], 404),
+            'https://partners.airalo.test/v2/sims/8988211000000002192/instructions' => Http::response([], 404),
         ]);
 
         $user = User::factory()->create();
@@ -787,7 +879,7 @@ class AiraloOrderControllerTest extends TestCase
     }
 
     #[Test]
-    public function it_logs_available_order_keys_when_all_installation_fallbacks_are_empty(): void
+    public function it_logs_available_order_keys_when_documented_installation_data_is_empty(): void
     {
         config([
             'services.airalo.base_url' => 'https://partners.airalo.test',
@@ -803,13 +895,11 @@ class AiraloOrderControllerTest extends TestCase
                 'access_token' => 'airalo-token-xyz',
                 'expires_in' => 86400,
             ]),
-            'https://partners.airalo.test/v2/orders/2192552' => Http::response([
+            'https://partners.airalo.test/v2/orders/2192552*' => Http::response([
                 'data' => ['id' => 2192552, 'sims' => [['iccid' => '8988211000000002192']], 'status' => 'completed'],
             ]),
             'https://partners.airalo.test/v2/sims/8988211000000002192/instructions' => Http::response([], 404),
             'https://partners.airalo.test/v2/sims/8988211000000002192' => Http::response([], 404),
-            'https://partners.airalo.test/v2/orders/2192552/instructions' => Http::response([], 404),
-            'https://partners.airalo.test/v2/sims*' => Http::response(['data' => []]),
         ]);
 
         $user = User::factory()->create();
@@ -850,7 +940,7 @@ class AiraloOrderControllerTest extends TestCase
                 'access_token' => 'airalo-token-xyz',
                 'expires_in' => 86400,
             ]),
-            'https://partners.airalo.test/v2/orders/ord-missing-1' => Http::response([
+            'https://partners.airalo.test/v2/orders/ord-missing-1*' => Http::response([
                 'message' => 'Order not found',
                 'qrcode_url' => 'https://airalo.test/private-qr',
             ], 404),
