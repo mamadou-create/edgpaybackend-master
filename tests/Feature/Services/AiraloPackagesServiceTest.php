@@ -146,6 +146,53 @@ class AiraloPackagesServiceTest extends TestCase
     }
 
     #[Test]
+    public function it_classifies_global_catalog_entries_by_slug_and_exposes_fair_usage_policy(): void
+    {
+        config(['cache.default' => 'array']);
+        Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
+
+        $fakeClient = new FakeAiraloApiClientService([
+            'data' => [
+                [
+                    'slug' => 'world',
+                    'title' => 'World',
+                    'type' => 'global',
+                    'operators' => [['packages' => [[
+                        'id' => 'world-1',
+                        'amount' => 5,
+                        'is_fair_usage_policy' => true,
+                        'fair_usage_policy' => 'Débit réduit après 3 GB par jour.',
+                        'day' => 30,
+                        'prices' => [['amount' => 20, 'currency' => 'USD']],
+                    ]]]],
+                ],
+                [
+                    'slug' => 'europe',
+                    'title' => 'Europe',
+                    'type' => 'global',
+                    'operators' => [['packages' => [[
+                        'id' => 'europe-1',
+                        'amount' => 3,
+                        'day' => 15,
+                        'prices' => [['amount' => 10, 'currency' => 'USD']],
+                    ]]]],
+                ],
+            ],
+        ]);
+
+        $service = new AiraloPackagesService($fakeClient);
+        $globalPackages = $service->getGlobalPackages();
+        $regionalPackages = $service->getRegionalPackages();
+
+        $this->assertCount(1, $globalPackages);
+        $this->assertSame('world-1', $globalPackages[0]->id);
+        $this->assertTrue($globalPackages[0]->isFairUsagePolicy);
+        $this->assertSame('Débit réduit après 3 GB par jour.', $globalPackages[0]->fairUsagePolicy);
+        $this->assertCount(1, $regionalPackages);
+        $this->assertSame('europe-1', $regionalPackages[0]->id);
+    }
+
+    #[Test]
     public function it_keeps_destinations_in_their_official_airalo_type_scope(): void
     {
         config(['cache.default' => 'array']);
@@ -302,7 +349,11 @@ class AiraloPackagesServiceTest extends TestCase
     #[Test]
     public function it_flattens_nested_catalog_data_from_operators_packages(): void
     {
-        config(['cache.default' => 'array']);
+        config([
+            'cache.default' => 'array',
+            'services.airalo.gnf_rate' => 9000,
+            'services.airalo.gnf_margin_percent' => 10,
+        ]);
         Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
 
         $fakeClient = new FakeAiraloApiClientService([
@@ -346,7 +397,7 @@ class AiraloPackagesServiceTest extends TestCase
         $this->assertSame(7, $packages[0]->validityDays);
         $this->assertSame(5.5, $packages[0]->costPrice);
         $this->assertSame('USD', $packages[0]->currency);
-        $this->assertSame(47300, $packages[0]->priceGnf);
+        $this->assertSame(54450, $packages[0]->priceGnf);
         $this->assertSame('Turk Telekom (Avea)', $packages[0]->operatorName);
         $this->assertSame(['4G', '5G'], $packages[0]->networkTypes);
         $this->assertTrue($packages[0]->is5g);

@@ -70,6 +70,8 @@ return [
         'timeout' => (int) env('AIRALO_TIMEOUT', 20),
         'retry_attempts' => (int) env('AIRALO_RETRY_ATTEMPTS', 3),
         'catalog_cache_ttl_minutes' => (int) env('AIRALO_CATALOG_CACHE_TTL_MINUTES', 60),
+        'gnf_rate' => (float) env('AIRALO_GNF_RATE', 8600),
+        'gnf_margin_percent' => (float) env('AIRALO_GNF_MARGIN_PERCENT', 0),
     ],
 
     'mobile_money' => [

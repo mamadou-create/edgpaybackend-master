@@ -17,6 +17,8 @@ final readonly class AiraloPackageData
         public string $operatorName = 'Réseau local',
         public array $networkTypes = [],
         public bool $is5g = false,
+        public bool $isFairUsagePolicy = false,
+        public string $fairUsagePolicy = '',
     ) {}
 
     public function toArray(): array
@@ -34,6 +36,8 @@ final readonly class AiraloPackageData
             'operator_name' => $this->operatorName,
             'network_types' => $this->networkTypes,
             'is_5g' => $this->is5g,
+            'is_fair_usage_policy' => $this->isFairUsagePolicy,
+            'fair_usage_policy' => $this->fairUsagePolicy,
         ];
     }
 }

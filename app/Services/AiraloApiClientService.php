@@ -9,6 +9,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 
 class AiraloApiClientService
 {
@@ -115,6 +116,72 @@ class AiraloApiClientService
         }
 
         return $this->post('/v2/orders', $payload);
+    }
+
+    /**
+     * @throws AiraloApiException
+     */
+    public function getOrder(string $orderId): array
+    {
+        return $this->get('/v2/orders/' . rawurlencode($orderId));
+    }
+
+    /**
+     * @throws AiraloApiException
+     */
+    public function getOrderInstructions(string $orderId): array
+    {
+        return $this->get('/v2/orders/' . rawurlencode($orderId) . '/instructions');
+    }
+
+    /**
+     * @throws AiraloApiException
+     */
+    public function getOrderSims(string $orderId): array
+    {
+        return $this->get('/v2/orders/' . rawurlencode($orderId) . '/sims');
+    }
+
+    /**
+     * @throws AiraloApiException
+     */
+    public function getSim(string $iccid): array
+    {
+        return $this->get('/v2/sims/' . rawurlencode($iccid));
+    }
+
+    /**
+     * @throws AiraloApiException
+     */
+    public function getSimInstructions(string $iccid): array
+    {
+        return $this->get('/v2/sims/' . rawurlencode($iccid) . '/instructions');
+    }
+
+    /**
+     * Airalo limits SIM endpoint requests to ten per minute for each ICCID.
+     *
+     * @throws AiraloApiException
+     */
+    public function getSimPackages(string $iccid): array
+    {
+        $cacheKey = 'airalo:sim-packages:' . hash_hmac(
+            'sha256',
+            $iccid,
+            (string) config('app.key'),
+        );
+
+        return Cache::remember($cacheKey, now()->addMinute(), function () use ($iccid): array {
+            return $this->get('/v2/sims/' . rawurlencode($iccid) . '/packages');
+        });
+    }
+
+    /**
+     * @throws AiraloApiException
+     */
+    public function getSims(array $query = []): array
+    {
+        return $this->get('/v2/sims', $query);
     }
 
     /**
@@ -273,9 +340,11 @@ class AiraloApiClientService
             'qr_code_url',
             'ac_code',
             'activation_code',
+            'matching_id',
             'iccid',
             'smdp_address',
             'sm_dp_address',
+            'direct_address',
         ];
 
         return in_array($key, $sensitiveKeys, true);

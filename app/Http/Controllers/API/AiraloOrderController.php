@@ -9,6 +9,7 @@ use App\Models\AiraloOrder;
 use App\Services\AiraloOrdersService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use InvalidArgumentException;
 
@@ -71,13 +72,13 @@ class AiraloOrderController extends Controller
         } catch (InsufficientBalanceException $exception) {
             return response()->json([
                 'success' => false,
-                'message' => $exception->getMessage(),
+                'message' => 'Solde insuffisant dans votre Wallet Mding Pay.',
                 'business_code' => $exception->businessCode(),
                 'errors' => [
                     'available' => $exception->available(),
                     'required' => $exception->required(),
                 ],
-            ], $exception->statusCode());
+            ], 400);
         } catch (AiraloApiException $exception) {
             return $this->airaloError($exception, 'La commande eSIM n’a pas pu être créée.');
         } catch (\Throwable $exception) {
@@ -152,6 +153,97 @@ class AiraloOrderController extends Controller
             'message' => 'Commande eSIM récupérée.',
             'data' => $order,
         ], 200);
+    }
+
+    public function instructions(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if ($user === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Utilisateur non authentifie.',
+            ], 401);
+        }
+
+        $order = AiraloOrder::query()
+            ->where('id', $id)
+            ->where('user_id', $user->id)
+            ->first();
+
+        if ($order === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Commande eSIM introuvable.',
+            ], 404);
+        }
+
+        try {
+            $instructions = $this->ordersService->getInstallationInstructions($order);
+            $airaloResponse = $instructions['_debug_airalo_response'] ?? [];
+            unset($instructions['_debug_airalo_response']);
+            Log::info('Airalo eSIM installation instructions retrieved.', [
+                'local_order_id' => $order->id,
+                'airalo_order_id' => $order->airalo_order_id,
+                'airalo_status' => 200,
+                'airalo_response' => $airaloResponse,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Instructions d’installation eSIM récupérées.',
+                'data' => $instructions,
+            ]);
+        } catch (InvalidArgumentException $exception) {
+            return response()->json([
+                'success' => false,
+                'message' => $exception->getMessage(),
+            ], 404);
+        } catch (AiraloApiException $exception) {
+            Log::error('Airalo eSIM installation instructions retrieval failed.', [
+                'local_order_id' => $order->id,
+                'airalo_order_id' => $order->airalo_order_id,
+                'airalo_status' => $exception->statusCode(),
+                'airalo_response' => $exception->payload(),
+                'airalo_message' => $exception->airaloMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'status' => $exception->statusCode(),
+                'message' => 'Les instructions d’installation ne sont pas disponibles pour le moment.',
+                'debug_message' => sprintf(
+                    'Airalo HTTP %d: %s',
+                    $exception->statusCode(),
+                    $exception->airaloMessage(),
+                ),
+                'code' => $exception->errorCode(),
+            ], $exception->statusCode());
+        }
+    }
+
+    public function packageHistory(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if ($user === null) {
+            return response()->json(['success' => false, 'message' => 'Utilisateur non authentifie.'], 401);
+        }
+
+        $order = AiraloOrder::query()->where('id', $id)->where('user_id', $user->id)->first();
+        if ($order === null) {
+            return response()->json(['success' => false, 'message' => 'Commande eSIM introuvable.'], 404);
+        }
+
+        try {
+            return response()->json([
+                'success' => true,
+                'message' => 'Historique des forfaits eSIM récupéré.',
+                'data' => $this->ordersService->getSimPackageHistory($order),
+            ]);
+        } catch (InvalidArgumentException $exception) {
+            return response()->json(['success' => false, 'message' => $exception->getMessage()], 404);
+        } catch (AiraloApiException $exception) {
+            return $this->airaloError($exception, 'Historique eSIM indisponible pour le moment.');
+        }
     }
 
     private function airaloError(AiraloApiException $exception, string $message): JsonResponse

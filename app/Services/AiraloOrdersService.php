@@ -45,6 +45,374 @@ class AiraloOrdersService
     }
 
     /**
+     * Retrieves installation material from Airalo on demand. It must not be
+     * persisted locally because it contains eSIM activation credentials.
+     *
+     * @return array<string, string|null>
+     *
+     * @throws AiraloApiException
+     */
+    public function getInstallationInstructions(AiraloOrder $order): array
+    {
+        $airaloOrderReference = trim((string) ($order->airalo_order_code ?: $order->airalo_order_id));
+        if ($airaloOrderReference === '') {
+            throw new InvalidArgumentException('Les instructions d’installation ne sont pas disponibles pour cette commande.');
+        }
+
+        $orderLookupReference = $airaloOrderReference;
+        try {
+            $response = $this->apiClient->getOrder($orderLookupReference);
+        } catch (AiraloApiException $exception) {
+            $numericOrderId = trim((string) $order->airalo_order_id);
+            if ($exception->statusCode() !== 404
+                || $numericOrderId === ''
+                || $numericOrderId === $orderLookupReference) {
+                throw $exception;
+            }
+
+            $orderLookupReference = $numericOrderId;
+            $response = $this->apiClient->getOrder($orderLookupReference);
+        }
+        $normalized = $this->normalizeOrderResponse($response);
+        $airaloOrderId = $normalized['order_id'] ?? $order->airalo_order_id ?? $airaloOrderReference;
+        $this->persistAiraloIdentifiers($order, $normalized);
+        $orderIccid = $normalized['iccid'];
+
+        if ($normalized['qrcode_url'] === null && $normalized['iccid'] !== null) {
+            $normalized = $this->mergeInstallationResponse(
+                $normalized,
+                $this->tryGetSimInstructions($normalized['iccid']),
+            );
+        }
+
+        if ($normalized['qrcode_url'] === null && $normalized['iccid'] !== null) {
+            $normalized = $this->mergeInstallationResponse(
+                $normalized,
+                $this->tryGetSim($normalized['iccid']),
+            );
+        }
+
+        if ($normalized['qrcode_url'] === null) {
+            $normalized = $this->mergeInstallationResponse(
+                $normalized,
+                $this->tryGetOrderSims($orderLookupReference),
+            );
+        }
+
+        $associationIccid = $normalized['iccid'];
+        if ($normalized['qrcode_url'] === null
+            && $orderIccid === null
+            && $associationIccid !== null) {
+            $normalized = $this->mergeInstallationResponse(
+                $normalized,
+                $this->tryGetSimInstructions($associationIccid),
+            );
+        }
+
+        if ($normalized['qrcode_url'] === null
+            && $orderIccid === null
+            && $associationIccid !== null) {
+            $normalized = $this->mergeInstallationResponse(
+                $normalized,
+                $this->tryGetSim($associationIccid),
+            );
+        }
+
+        if ($normalized['qrcode_url'] === null) {
+            $normalized = $this->mergeInstallationResponse(
+                $normalized,
+                $this->tryGetOrderInstructions($airaloOrderId),
+            );
+        }
+
+        if ($normalized['qrcode_url'] === null) {
+            $normalized = $this->mergeInstallationResponse(
+                $normalized,
+                $this->findMatchingSimFromList($order, $airaloOrderId, $normalized['iccid']),
+            );
+        }
+
+        if ($normalized['qrcode_url'] === null
+            && $associationIccid === null
+            && $normalized['iccid'] !== null) {
+            $normalized = $this->mergeInstallationResponse(
+                $normalized,
+                $this->tryGetSimInstructions($normalized['iccid']),
+            );
+        }
+
+        if ($normalized['qrcode_url'] === null
+            && $associationIccid === null
+            && $normalized['iccid'] !== null) {
+            $normalized = $this->mergeInstallationResponse(
+                $normalized,
+                $this->tryGetSim($normalized['iccid']),
+            );
+        }
+
+        if ($normalized['qrcode_url'] === null) {
+            Log::warning('Airalo keys available', [
+                'airalo_order_id' => $airaloOrderId,
+                'keys' => array_keys($this->toArray($response['data'] ?? null)),
+            ]);
+        }
+
+        if ($normalized['iccid'] === null) {
+            $this->logLatestSimIds($airaloOrderId);
+        }
+
+        $this->persistAiraloIdentifiers($order, $normalized);
+
+        $hasTechnicalInstructions = $normalized['qrcode_url'] !== null
+            || $normalized['smdp_address'] !== null
+            || $normalized['ac_code'] !== null;
+        $guide = $hasTechnicalInstructions ? [] : $this->extractGuideData($response);
+        $instructionsStatus = $hasTechnicalInstructions
+            ? 'complete'
+            : ($guide === [] ? 'unavailable' : 'partial');
+
+        return [
+            'order_id' => $normalized['order_id'] ?? $airaloOrderId,
+            'iccid' => $normalized['iccid'] ?? null,
+            'qrcode_url' => $normalized['qrcode_url'] ?? null,
+            'smdp_address' => $normalized['smdp_address'] ?? null,
+            'ac_code' => $normalized['ac_code'] ?? null,
+            'instructions_status' => $instructionsStatus,
+            'guide_url' => $guide['guide_url'] ?? null,
+            'instructions_html' => $guide['instructions_html'] ?? null,
+            '_debug_airalo_response' => $this->redactInstallationPayload($response),
+        ];
+    }
+
+    /**
+     * Retrieves package and recharge history without exposing the ICCID in the
+     * response. Unlimited plans do not expose meaningless zero balances.
+     *
+     * @return array<int, array<string, mixed>>
+     * @throws AiraloApiException
+     */
+    public function getSimPackageHistory(AiraloOrder $order): array
+    {
+        $iccid = $order->iccid;
+        if (!is_string($iccid) || trim($iccid) === '') {
+            $this->getInstallationInstructions($order);
+            $order->refresh();
+            $iccid = $order->iccid;
+        }
+
+        if (!is_string($iccid) || trim($iccid) === '') {
+            throw new InvalidArgumentException('L’historique est indisponible tant que la SIM Airalo n’est pas associée à cette commande.');
+        }
+
+        $response = $this->apiClient->getSimPackages($iccid);
+        $data = $this->toArray($response['data'] ?? null);
+        $packages = $this->toArray($data['packages'] ?? null);
+        if ($packages === []) {
+            $packages = $data;
+        }
+        if (!array_is_list($packages)) {
+            $packages = [$packages];
+        }
+
+        return array_values(array_map(function (mixed $package): array {
+            $entry = $this->toArray($package);
+            if (($entry['is_unlimited'] ?? false) === true) {
+                unset($entry['remaining'], $entry['total'], $entry['amount']);
+            }
+
+            return $entry;
+        }, $packages));
+    }
+
+    /**
+     * @param array<string, mixed> $normalized
+     */
+    private function persistAiraloIdentifiers(AiraloOrder $order, array $normalized): void
+    {
+        $updates = [];
+        if (($order->airalo_order_code === null || $order->airalo_order_code === '')
+            && ($normalized['order_code'] ?? null) !== null) {
+            $updates['airalo_order_code'] = $normalized['order_code'];
+        }
+        if (($order->iccid === null || $order->iccid === '') && ($normalized['iccid'] ?? null) !== null) {
+            $updates['iccid'] = $normalized['iccid'];
+        }
+
+        if ($updates !== []) {
+            $order->forceFill($updates)->save();
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $response
+     * @return array<string, string>
+     */
+    private function extractGuideData(array $response): array
+    {
+        $order = $this->extractOrderPayload($response);
+        $guides = $this->toArray($order['installation_guides'] ?? null);
+        $guideUrl = $this->firstString($guides, ['en', 'pdf']);
+        $instructionsHtml = $this->firstString(
+            $order,
+            ['qrcode_installation', 'manual_installation'],
+        );
+
+        return array_filter([
+            'guide_url' => $guideUrl,
+            'instructions_html' => $instructionsHtml,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $base
+     * @param array<string, mixed>|null $response
+     * @return array<string, mixed>
+     */
+    private function mergeInstallationResponse(array $base, ?array $response): array
+    {
+        if ($response === null) {
+            return $base;
+        }
+
+        $candidate = $this->normalizeOrderResponse($response);
+        foreach (['iccid', 'qrcode_url', 'smdp_address', 'ac_code'] as $key) {
+            if (($base[$key] ?? null) === null && ($candidate[$key] ?? null) !== null) {
+                $base[$key] = $candidate[$key];
+            }
+        }
+
+        return $base;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function tryGetSimInstructions(string $iccid): ?array
+    {
+        try {
+            return $this->apiClient->getSimInstructions($iccid);
+        } catch (AiraloApiException) {
+            return null;
+        }
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function tryGetSim(string $iccid): ?array
+    {
+        try {
+            return $this->apiClient->getSim($iccid);
+        } catch (AiraloApiException) {
+            return null;
+        }
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function tryGetOrderInstructions(string $airaloOrderId): ?array
+    {
+        try {
+            return $this->apiClient->getOrderInstructions($airaloOrderId);
+        } catch (AiraloApiException) {
+            return null;
+        }
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function tryGetOrderSims(string $airaloOrderId): ?array
+    {
+        try {
+            return $this->apiClient->getOrderSims($airaloOrderId);
+        } catch (AiraloApiException) {
+            return null;
+        }
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function findMatchingSimFromList(AiraloOrder $order, string $airaloOrderId, ?string $iccid): ?array
+    {
+        try {
+            $response = $this->apiClient->getSims([
+                'filter[order_id]' => $airaloOrderId,
+                'order_id' => $airaloOrderId,
+                'limit' => 10,
+            ]);
+        } catch (AiraloApiException) {
+            return null;
+        }
+
+        $data = $this->toArray($response['data'] ?? null);
+        $candidates = $this->toArray($data['sims'] ?? null);
+        if ($candidates === []) {
+            $candidates = $data;
+        }
+        if (!array_is_list($candidates)) {
+            $candidates = [$candidates];
+        }
+
+        foreach ($candidates as $candidate) {
+            if (!is_array($candidate)) {
+                continue;
+            }
+
+            $candidateIccid = $this->firstString($candidate, ['iccid']);
+            if ($iccid !== null && $candidateIccid === $iccid) {
+                return ['data' => $candidate];
+            }
+
+            $candidateOrderId = $this->firstScalarString($candidate, ['order_id', 'orderId']);
+            $nestedOrder = $this->toArray($candidate['order'] ?? null);
+            $candidateOrderId ??= $this->firstScalarString($nestedOrder, ['id', 'order_id']);
+            if ($candidateOrderId === $airaloOrderId) {
+                return ['data' => $candidate];
+            }
+        }
+
+        return null;
+    }
+
+    private function logLatestSimIds(string $airaloOrderId): void
+    {
+        try {
+            $response = $this->apiClient->getSims(['limit' => 5]);
+        } catch (AiraloApiException) {
+            return;
+        }
+
+        $data = $this->toArray($response['data'] ?? null);
+        $candidates = $this->toArray($data['sims'] ?? null);
+        if ($candidates === []) {
+            $candidates = $data;
+        }
+        if (!array_is_list($candidates)) {
+            $candidates = [$candidates];
+        }
+
+        $iccids = [];
+        foreach ($candidates as $candidate) {
+            if (!is_array($candidate)) {
+                continue;
+            }
+
+            $iccid = $this->firstString($candidate, ['iccid']);
+            if ($iccid !== null) {
+                $iccids[] = $iccid;
+            }
+        }
+
+        Log::warning('Airalo latest SIMs IDs', [
+            'airalo_order_id' => $airaloOrderId,
+            'iccids' => array_slice($iccids, 0, 5),
+        ]);
+    }
+
+    /**
      * @return array<string, mixed>
      *
      * @throws InvalidArgumentException
@@ -113,6 +481,10 @@ class AiraloOrdersService
 
             $response = $this->apiClient->createOrder($normalizedPackageId, $quantity, $description);
             $normalized = $this->normalizeOrderResponse($response);
+            $airaloOrderId = $normalized['order_id'] ?? null;
+            if ($airaloOrderId === null || $airaloOrderId === '') {
+                throw new InvalidArgumentException('Airalo n’a pas retourné d’identifiant de commande valide.');
+            }
 
             AiraloOrder::query()->create([
                 'user_id' => $user->id,
@@ -122,7 +494,9 @@ class AiraloOrdersService
                 'data_volume' => $this->packageDataVolume($package),
                 'validity_days' => $this->packageValidityDays($package),
                 'operator_name' => $this->packageOperatorName($package),
-                'airalo_order_id' => $normalized['order_id'] ?? null,
+                'airalo_order_id' => $airaloOrderId,
+                'airalo_order_code' => $normalized['order_code'] ?? null,
+                'iccid' => $normalized['iccid'] ?? null,
                 'quantity' => $quantity,
                 'price' => $unitPrice,
                 'currency' => $this->extractPackageCurrency($package),
@@ -138,6 +512,7 @@ class AiraloOrdersService
                 'reference' => 'airalo_' . Str::uuid()->toString(),
                 'description' => 'Achat forfait eSIM Airalo: ' . $normalizedPackageId,
                 'metadata' => [
+                    'payment_status' => 'completed',
                     'package_id' => $normalizedPackageId,
                     'quantity' => $quantity,
                     'unit_price' => $unitPrice,
@@ -284,11 +659,16 @@ class AiraloOrdersService
 
     private function convertToGnf(float $amount, string $currency): int
     {
-        return match ($currency) {
-            'GNF' => (int) round($amount),
-            'EUR' => (int) round($amount * 9300),
-            default => (int) round($amount * 8600),
-        };
+        if ($currency === 'GNF') {
+            return (int) round($amount);
+        }
+
+        $rate = $currency === 'EUR'
+            ? (float) config('services.airalo.eur_gnf_rate', 9300)
+            : (float) config('services.airalo.gnf_rate', 8600);
+        $marginPercent = max(0, (float) config('services.airalo.gnf_margin_percent', 0));
+
+        return (int) round($amount * $rate * (1 + ($marginPercent / 100)));
     }
 
     /**
@@ -356,29 +736,36 @@ class AiraloOrdersService
     private function normalizeOrderResponse(array $response): array
     {
         $order = $this->extractOrderPayload($response);
-
-        $installation = $this->toArray($order['installation'] ?? $order['install'] ?? $order['activation'] ?? null);
-        $sim = $this->toArray($order['sim'] ?? $order['esim'] ?? null);
-
-        if ($sim === []) {
-            $sims = $order['sims'] ?? null;
-            if (is_array($sims) && isset($sims[0]) && is_array($sims[0])) {
-                $sim = $this->toArray($sims[0]);
-            }
-        }
+        $sims = $this->toArray($order['sims'] ?? null);
+        $subscriptions = $this->toArray($order['subscriptions'] ?? null);
+        $sources = [
+            $this->toArray($sims[0] ?? null),
+            $this->toArray($subscriptions[0] ?? null),
+            $this->toArray($order['esim'] ?? null),
+            $this->toArray($order['instructions'] ?? null),
+            $this->toArray($order['installation'] ?? null),
+            $this->toArray($order['install'] ?? null),
+            $this->toArray($order['activation'] ?? null),
+            $this->toArray($order['sim'] ?? null),
+            $order,
+        ];
 
         return [
-            'order_id' => $this->firstString($order, ['order_id', 'id', 'uuid']),
-            'iccid' => $this->firstString($sim, ['iccid']) ?: $this->firstString($order, ['iccid']),
-            'qrcode_url' => $this->firstString($installation, ['qrcode_url', 'qr_code_url', 'qrCodeUrl'])
-                ?: $this->firstString($sim, ['qrcode_url', 'qr_code_url', 'qrCodeUrl', 'qrcode'])
-                ?: $this->firstString($order, ['qrcode_url', 'qr_code_url', 'qrCodeUrl', 'qrcode']),
-            'smdp_address' => $this->firstString($installation, ['smdp_address', 'sm_dp_address', 'smdpAddress'])
-                ?: $this->firstString($sim, ['smdp_address', 'sm_dp_address', 'smdpAddress'])
-                ?: $this->firstString($order, ['smdp_address', 'sm_dp_address', 'smdpAddress']),
-            'ac_code' => $this->firstString($installation, ['ac_code', 'activation_code', 'activationCode'])
-                ?: $this->firstString($sim, ['ac_code', 'activation_code', 'activationCode'])
-                ?: $this->firstString($order, ['ac_code', 'activation_code', 'activationCode']),
+            'order_id' => $this->firstScalarString($order, ['id', 'order_id', 'uuid', 'code']),
+            'order_code' => $this->firstString($order, ['code']),
+            'iccid' => $this->firstStringFromSources($sources, ['iccid']),
+            'qrcode_url' => $this->firstStringFromSources(
+                $sources,
+                ['qrcode_url', 'qr_code_url', 'qrCodeUrl', 'qr_code', 'qrcode'],
+            ),
+            'smdp_address' => $this->firstStringFromSources(
+                $sources,
+                ['smdp_address', 'sm_dp_address', 'smdpAddress', 'direct_address'],
+            ),
+            'ac_code' => $this->firstStringFromSources(
+                $sources,
+                ['ac_code', 'activation_code', 'activationCode', 'matching_id'],
+            ),
             'raw' => $response,
         ];
     }
@@ -391,11 +778,20 @@ class AiraloOrdersService
     {
         $data = $this->toArray($response['data'] ?? null);
 
-        if ($data !== []) {
-            return $data;
+        if ($data === []) {
+            return $response;
         }
 
-        return $response;
+        $nestedOrder = $this->toArray($data['order'] ?? null);
+        if ($nestedOrder !== []) {
+            return $nestedOrder;
+        }
+
+        if (array_is_list($data) && isset($data[0]) && is_array($data[0])) {
+            return $data[0];
+        }
+
+        return $data;
     }
 
     /**
@@ -415,6 +811,45 @@ class AiraloOrdersService
     }
 
     /**
+     * @param array<int, array<string, mixed>> $sources
+     * @param array<int, string> $keys
+     */
+    private function firstStringFromSources(array $sources, array $keys): ?string
+    {
+        foreach ($sources as $source) {
+            $value = $this->firstString($source, $keys);
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Airalo order IDs can be UUID strings or numeric integers.
+     *
+     * @param array<string, mixed> $source
+     * @param array<int, string> $keys
+     */
+    private function firstScalarString(array $source, array $keys): ?string
+    {
+        foreach ($keys as $key) {
+            $value = $source[$key] ?? null;
+            if (!is_string($value) && !is_int($value)) {
+                continue;
+            }
+
+            $normalized = trim((string) $value);
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function toArray(mixed $value): array
@@ -424,5 +859,42 @@ class AiraloOrdersService
         }
 
         return [];
+    }
+
+    /**
+     * Keeps the response shape available for temporary diagnostics without
+     * writing eSIM activation credentials to the application logs.
+     *
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function redactInstallationPayload(array $payload): array
+    {
+        $sensitiveKeys = [
+            'qrcode_url',
+            'qr_code_url',
+            'qr_code',
+            'qrcode',
+            'smdp_address',
+            'sm_dp_address',
+            'direct_address',
+            'ac_code',
+            'activation_code',
+            'matching_id',
+            'iccid',
+        ];
+        $redacted = [];
+
+        foreach ($payload as $key => $value) {
+            if (in_array(strtolower((string) $key), $sensitiveKeys, true)) {
+                $redacted[$key] = '[REDACTED]';
+            } elseif (is_array($value)) {
+                $redacted[$key] = $this->redactInstallationPayload($value);
+            } else {
+                $redacted[$key] = $value;
+            }
+        }
+
+        return $redacted;
     }
 }

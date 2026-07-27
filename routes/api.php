@@ -163,6 +163,15 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
         Route::post('/orders', [AiraloOrderController::class, 'store']);
     });
 
+    Route::post('esim/orders', [AiraloOrderController::class, 'store'])
+        ->middleware('throttle:20,1');
+    Route::get('esim/orders/{id}/instructions', [AiraloOrderController::class, 'instructions'])
+        ->whereNumber('id')
+        ->middleware('throttle:10,1');
+    Route::get('esim/orders/{id}/packages', [AiraloOrderController::class, 'packageHistory'])
+        ->whereNumber('id')
+        ->middleware('throttle:10,1');
+
     // FINTECH (admin): approbation commande avec statut_paiement obligatoire
     Route::post('admin/commandes/{id}/approuver', [TopupRequestController::class, 'approve']);
 

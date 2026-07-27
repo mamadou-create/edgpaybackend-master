@@ -184,7 +184,7 @@ class AiraloPackagesService
 
             // Format deja plat (legacy / tests)
             if (isset($entry['id']) || isset($entry['package_id'])) {
-                $entry['type'] = $type;
+                $entry['type'] = $this->classifyCatalogType($type, (string) ($entry['slug'] ?? ''));
                 $normalized[] = $entry;
                 continue;
             }
@@ -219,7 +219,7 @@ class AiraloPackagesService
                         'package_id' => (string) ($package['package_id'] ?? $package['id'] ?? ''),
                         'title' => (string) ($package['title'] ?? $entry['title'] ?? $entry['slug'] ?? 'Unknown package'),
                         'country_name' => (string) ($entry['title'] ?? $entry['name'] ?? $entry['slug'] ?? ''),
-                        'type' => $type,
+                        'type' => $this->classifyCatalogType($type, (string) ($entry['slug'] ?? '')),
                         'country_code' => (string) ($entry['country_code'] ?? $entry['iso_code'] ?? ''),
                         'iso_code' => (string) ($entry['country_code'] ?? $entry['iso_code'] ?? ''),
                         'countries' => $operator['countries'] ?? $entry['countries'] ?? [],
@@ -236,6 +236,8 @@ class AiraloPackagesService
                         'operator_name' => $operatorName,
                         'network_types' => $networkTypes,
                         'is_5g' => in_array('5G', $networkTypes, true),
+                        'is_fair_usage_policy' => $package['is_fair_usage_policy'] ?? false,
+                        'fair_usage_policy' => (string) ($package['fair_usage_policy'] ?? ''),
                     ];
                 }
             }
@@ -266,7 +268,33 @@ class AiraloPackagesService
             operatorName: $this->extractOperatorName([], $item, (string) ($item['country_name'] ?? '')),
             networkTypes: $this->extractNetworkTypes([], $item),
             is5g: $this->is5g($item),
+            isFairUsagePolicy: $this->isFairUsagePolicy($item),
+            fairUsagePolicy: trim((string) ($item['fair_usage_policy'] ?? '')),
         );
+    }
+
+    private function classifyCatalogType(string $requestedType, string $slug): string
+    {
+        if ($requestedType === 'local') {
+            return 'local';
+        }
+
+        if ($requestedType !== 'global') {
+            return $requestedType;
+        }
+
+        $normalizedSlug = strtolower(trim($slug));
+        if (str_contains($normalizedSlug, 'world') || str_contains($normalizedSlug, 'monde')) {
+            return 'global';
+        }
+
+        foreach (['europe', 'africa', 'latin-america', 'latin_america', 'latam', 'asia', 'middle-east', 'middle_east', 'caribbean', 'oceania'] as $region) {
+            if (str_contains($normalizedSlug, $region)) {
+                return 'regional';
+            }
+        }
+
+        return 'global';
     }
 
     private function extractOperatorName(array $operator, array $package, string $countryHint = ''): string
@@ -435,13 +463,25 @@ class AiraloPackagesService
         return in_array('5G', $this->extractNetworkTypes([], $item), true);
     }
 
+    private function isFairUsagePolicy(array $item): bool
+    {
+        $value = $item['is_fair_usage_policy'] ?? false;
+
+        return $value === true || $value === 1 || $value === '1' || $value === 'true';
+    }
+
     private function convertToGnf(float $amount, string $currency): int
     {
-        return match ($currency) {
-            'GNF' => (int) round($amount),
-            'EUR' => (int) round($amount * 9300),
-            default => (int) round($amount * 8600),
-        };
+        if ($currency === 'GNF') {
+            return (int) round($amount);
+        }
+
+        $rate = $currency === 'EUR'
+            ? (float) config('services.airalo.eur_gnf_rate', 9300)
+            : (float) config('services.airalo.gnf_rate', 8600);
+        $marginPercent = max(0, (float) config('services.airalo.gnf_margin_percent', 0));
+
+        return (int) round($amount * $rate * (1 + ($marginPercent / 100)));
     }
 
     /**
