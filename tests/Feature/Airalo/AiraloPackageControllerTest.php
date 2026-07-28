@@ -34,6 +34,16 @@ class AiraloPackageControllerTest extends TestCase
                         validityDays: 7,
                         costPrice: 4.5,
                         currency: 'USD',
+                        operatorName: 'Orange',
+                        networkTypes: ['LTE'],
+                        networkOperatorName: 'Orange',
+                        networkType: 'LTE',
+                        countryName: 'Sénégal',
+                        includedServices: [
+                            'data' => ['status' => 'included', 'quota' => '1 GB'],
+                            'calls' => ['status' => 'not_included', 'quota' => null],
+                            'sms' => ['status' => 'unspecified', 'quota' => null],
+                        ],
                     ),
                 ]);
         });
@@ -50,7 +60,22 @@ class AiraloPackageControllerTest extends TestCase
             ->assertJsonPath('data.0.data_unit', 'GB')
             ->assertJsonPath('data.0.validity_days', 7)
             ->assertJsonPath('data.0.cost_price', 4.5)
-            ->assertJsonPath('data.0.currency', 'USD');
+            ->assertJsonPath('data.0.currency', 'USD')
+            ->assertJsonPath('data.0.package_id', 'sn-1')
+            ->assertJsonPath('data.0.country_code', 'SN')
+            ->assertJsonPath('data.0.country_name', 'Sénégal')
+            ->assertJsonPath('data.0.data_amount', '1 GB')
+            ->assertJsonPath('data.0.price', 4.5)
+            ->assertJsonPath('data.0.network.operator_name', 'Orange')
+            ->assertJsonPath('data.0.network.network_type', 'LTE')
+            ->assertJsonPath('data.0.network.is_supported', true)
+            ->assertJsonPath('data.0.included_services.data.status', 'included')
+            ->assertJsonPath('data.0.included_services.data.quota', '1 GB')
+            ->assertJsonPath('data.0.included_services.calls.status', 'not_included')
+            ->assertJsonPath('data.0.included_services.sms.status', 'unspecified')
+            ->assertJsonPath('data.0.details.validity_policy', "La période de validité commence lorsque l'eSIM se connecte à un réseau mobile dans sa zone de couverture. Si vous installez l'eSIM en dehors de sa zone de couverture, vous pouvez vous connecter à un réseau à votre arrivée.")
+            ->assertJsonPath('data.0.details.renewals', 'Renouvelez automatiquement votre forfait eSIM lorsque vous avez besoin de plus de données. Activez ou désactivez les renouvellements selon vos besoins.')
+            ->assertJsonPath('data.0.details.ip_routing', "L'adresse IP de l'eSIM peut apparaître en dehors de sa zone de couverture ; cela n'aura aucune incidence sur votre consommation de données.");
     }
 
     #[Test]
@@ -72,6 +97,7 @@ class AiraloPackageControllerTest extends TestCase
                         validityDays: 30,
                         costPrice: 20.0,
                         currency: 'USD',
+                        networkTypes: ['LTE'],
                     ),
                 ]);
         });
@@ -81,7 +107,12 @@ class AiraloPackageControllerTest extends TestCase
         $response
             ->assertOk()
             ->assertJsonPath('success', true)
-            ->assertJsonPath('data.0.id', 'global-1');
+            ->assertJsonPath('data.0.id', 'global-1')
+            ->assertJsonPath('data.0.operator_name', '')
+            ->assertJsonPath('data.0.network_types', ['LTE'])
+            ->assertJsonPath('data.0.network.operator_name', '')
+            ->assertJsonPath('data.0.network.network_type', '4G')
+            ->assertJsonPath('data.0.network.is_supported', true);
     }
 
     #[Test]

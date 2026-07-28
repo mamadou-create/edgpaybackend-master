@@ -879,6 +879,51 @@ class AiraloOrderControllerTest extends TestCase
     }
 
     #[Test]
+    public function it_normalizes_remaining_sim_data_for_the_mobile_client(): void
+    {
+        config([
+            'services.airalo.base_url' => 'https://partners.airalo.test',
+            'services.airalo.client_id' => 'airalo-client-id',
+            'services.airalo.client_secret' => 'airalo-client-secret',
+            'cache.default' => 'array',
+        ]);
+        Cache::forget('airalo:oauth:access_token');
+
+        Http::fake([
+            'https://partners.airalo.test/v2/token' => Http::response([
+                'access_token' => 'airalo-token-xyz',
+                'expires_in' => 86400,
+            ]),
+            'https://partners.airalo.test/v2/sims/89852350326101080145/packages' => Http::response([
+                'data' => [[
+                    'id' => 'package-balance-1',
+                    'remaining' => '1.5 GB',
+                    'amount' => '2 GB',
+                ]],
+            ]),
+        ]);
+
+        $user = User::factory()->create();
+        $order = AiraloOrder::query()->create([
+            'user_id' => $user->id,
+            'package_id' => 'discover-in-3days-300mb',
+            'airalo_order_id' => '2192553',
+            'iccid' => '89852350326101080145',
+            'quantity' => 1,
+            'currency' => 'USD',
+            'status' => 'completed',
+        ]);
+        $this->actingAs($user, 'api');
+
+        $this->getJson('/api/v1/esim/orders/' . $order->id . '/packages')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', 'package-balance-1')
+            ->assertJsonPath('data.0.is_unlimited', false)
+            ->assertJsonPath('data.0.remaining_mb', 1536)
+            ->assertJsonPath('data.0.total_mb', 2048);
+    }
+
+    #[Test]
     public function it_logs_available_order_keys_when_documented_installation_data_is_empty(): void
     {
         config([

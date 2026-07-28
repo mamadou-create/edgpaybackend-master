@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Cache;
 
 class AiraloPackagesService
 {
-    private const CACHE_KEY_ALL_PACKAGES = 'airalo:packages:catalog:v1';
+    private const CACHE_KEY_ALL_PACKAGES = 'airalo:packages:catalog:v3';
 
     public function __construct(private readonly AiraloApiClientService $apiClient)
     {
@@ -193,6 +193,8 @@ class AiraloPackagesService
             if (!is_array($operators)) {
                 continue;
             }
+            $networkOperatorName = $this->firstAiraloOperatorName($operators);
+            $networkType = $this->firstAiraloOperatorNetworkType($operators);
 
             foreach ($operators as $operator) {
                 if (!is_array($operator)) {
@@ -213,11 +215,16 @@ class AiraloPackagesService
                     $countryHint = (string) ($entry['title'] ?? $entry['name'] ?? $entry['slug'] ?? '');
                     $operatorName = $this->extractOperatorName($operator, $package, $countryHint);
                     $networkTypes = $this->extractNetworkTypes($operator, $package);
+                    $operatorNames = $this->extractOperatorNames($operators);
+                    if ($this->isCountryCode($operatorName)) {
+                        $operatorName = $operatorNames[0] ?? '';
+                    }
 
                     $normalized[] = [
                         'id' => (string) ($package['id'] ?? $package['package_id'] ?? ''),
                         'package_id' => (string) ($package['package_id'] ?? $package['id'] ?? ''),
                         'title' => (string) ($package['title'] ?? $entry['title'] ?? $entry['slug'] ?? 'Unknown package'),
+                        'description' => (string) ($package['description'] ?? $entry['description'] ?? ''),
                         'country_name' => (string) ($entry['title'] ?? $entry['name'] ?? $entry['slug'] ?? ''),
                         'type' => $this->classifyCatalogType($type, (string) ($entry['slug'] ?? '')),
                         'country_code' => (string) ($entry['country_code'] ?? $entry['iso_code'] ?? ''),
@@ -234,10 +241,14 @@ class AiraloPackagesService
                         'currency' => $currency,
                         'price_currency' => $currency,
                         'operator_name' => $operatorName,
+                        'operator_names' => $operatorNames,
                         'network_types' => $networkTypes,
+                        'network_operator_name' => $networkOperatorName,
+                        'network_type' => $networkType,
                         'is_5g' => in_array('5G', $networkTypes, true),
                         'is_fair_usage_policy' => $package['is_fair_usage_policy'] ?? false,
                         'fair_usage_policy' => (string) ($package['fair_usage_policy'] ?? ''),
+                        'included_services' => $this->extractIncludedServices($package),
                     ];
                 }
             }
@@ -251,11 +262,17 @@ class AiraloPackagesService
     private function toDto(array $item): AiraloPackageData
     {
         [$volume, $unit] = $this->extractDataVolumeAndUnit($item);
+        $isoCode = $this->extractPrimaryIsoCode($item);
+        $operatorNames = $this->extractOperatorNamesFromItem($item);
+        $operatorName = trim((string) ($item['operator_name'] ?? ''));
+        if ($operatorName === '' || $operatorName === $isoCode || $this->isCountryCode($operatorName)) {
+            $operatorName = $operatorNames[0] ?? '';
+        }
 
-        return new AiraloPackageData(
+        $dto = new AiraloPackageData(
             id: (string) ($item['id'] ?? $item['package_id'] ?? ''),
             title: (string) ($item['title'] ?? $item['name'] ?? $item['slug'] ?? 'Unknown package'),
-            isoCode: $this->extractPrimaryIsoCode($item),
+            isoCode: $isoCode,
             dataVolume: $volume,
             dataUnit: $unit,
             validityDays: $this->extractValidityDays($item),
@@ -265,12 +282,198 @@ class AiraloPackagesService
                 $this->extractCostPrice($item),
                 strtoupper((string) ($item['currency'] ?? $item['price_currency'] ?? 'USD')),
             ),
-            operatorName: $this->extractOperatorName([], $item, (string) ($item['country_name'] ?? '')),
+            operatorName: $operatorName,
             networkTypes: $this->extractNetworkTypes([], $item),
+            networkOperatorName: trim((string) ($item['network_operator_name'] ?? '')),
+            networkType: trim((string) ($item['network_type'] ?? '')) ?: '4G',
+            countryName: $this->extractCountryName(
+                $item,
+                $this->extractPrimaryIsoCode($item),
+            ),
             is5g: $this->is5g($item),
             isFairUsagePolicy: $this->isFairUsagePolicy($item),
             fairUsagePolicy: trim((string) ($item['fair_usage_policy'] ?? '')),
+            description: trim((string) ($item['description'] ?? '')),
+            operatorNames: $operatorNames,
+            includedServices: $this->extractIncludedServices($item),
         );
+
+        return $dto;
+    }
+
+    /**
+     * @param array<int, mixed> $operators
+     * @return array<int, string>
+     */
+    private function extractOperatorNames(array $operators): array
+    {
+        $names = [];
+        foreach ($operators as $operator) {
+            if (!is_array($operator)) {
+                continue;
+            }
+
+            $name = trim((string) ($operator['name'] ?? ''));
+            if ($name === '') {
+                $names = [...$names, ...$this->extractOperatorNamesFromInfo($operator['info'] ?? null)];
+                continue;
+            }
+            $names[] = $name;
+        }
+
+        return array_values(array_unique($names));
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function extractOperatorNamesFromInfo(mixed $info): array
+    {
+        foreach (is_array($info) ? $info : [$info] as $value) {
+            if (!is_string($value)) {
+                continue;
+            }
+
+            $matches = [];
+            if (preg_match('/\b(?:operates\s+on|fonctionne\s+sur|sur)\s+(?:the|le|la|l[\'’])?\s*(.+?)\s+(?:networks?|réseaux?)\b/i', $value, $matches) !== 1) {
+                continue;
+            }
+
+            $names = preg_split('/\s*(?:,|\/|\band\b|\bet\b)\s*/i', $matches[1]) ?: [];
+            return array_values(array_filter(array_map(
+                static fn (string $name): string => trim($name, " .,:;\t\n\r\0\x0B"),
+                $names,
+            )));
+        }
+
+        return [];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function extractOperatorNamesFromItem(array $item): array
+    {
+        $names = $item['operator_names'] ?? null;
+        if (is_array($names)) {
+            return array_values(array_filter(array_map(
+                static fn (mixed $name): string => trim((string) $name),
+                $names,
+            )));
+        }
+
+        $operatorNames = $item['operators'] ?? null;
+        if (is_array($operatorNames)) {
+            return $this->extractOperatorNames($operatorNames);
+        }
+        return [];
+    }
+
+    /**
+     * @return array<string, array{status: string, quota: ?string}>
+     */
+    private function extractIncludedServices(array $item): array
+    {
+        $services = $item['included_services'] ?? $item['services'] ?? null;
+        if (is_array($services) && isset($services['data'], $services['calls'], $services['sms'])) {
+            return $services;
+        }
+
+        return [
+            'data' => $this->normalizeService(
+                array_key_exists('data', $item) ? $item['data'] : null,
+                array_key_exists('data', $item),
+                true,
+                        (string) ($item['data_unit'] ?? $item['dataUnit'] ?? 'GB'),
+            ),
+            'calls' => $this->normalizeService(
+                $item['voice'] ?? $item['calls'] ?? $item['call'] ?? null,
+                array_key_exists('voice', $item) || array_key_exists('calls', $item) || array_key_exists('call', $item),
+                false,
+                'minutes',
+            ),
+            'sms' => $this->normalizeService(
+                $item['text'] ?? $item['sms'] ?? null,
+                array_key_exists('text', $item) || array_key_exists('sms', $item),
+                false,
+                'SMS',
+            ),
+        ];
+    }
+
+    /**
+     * @return array{status: string, quota: ?string}
+     */
+    private function normalizeService(mixed $value, bool $provided, bool $isData, string $unit = ''): array
+    {
+        if (!$provided) {
+            return ['status' => 'unspecified', 'quota' => null];
+        }
+
+        if ($value === null || $value === false || $value === '') {
+            return ['status' => 'not_included', 'quota' => null];
+        }
+
+        if ($value === true) {
+            return ['status' => 'included', 'quota' => null];
+        }
+
+        $normalized = trim((string) $value);
+        if (strcasecmp($normalized, 'unlimited') === 0) {
+            return ['status' => 'included', 'quota' => $isData ? 'Illimitées' : 'Illimités'];
+        }
+
+        if (is_numeric($value)) {
+            $amount = (float) $value;
+            $formatted = fmod($amount, 1.0) === 0.0
+                ? (string) (int) $amount
+                : rtrim(rtrim(number_format($amount, 2, '.', ''), '0'), '.');
+            return [
+                'status' => 'included',
+                'quota' => $formatted . ($unit !== '' ? ' ' . $unit : ''),
+            ];
+        }
+
+        return ['status' => 'included', 'quota' => $normalized];
+    }
+
+    /**
+     * The enriched network object follows the Airalo v2 contract literally:
+     * use only the first operator, without borrowing values from fallbacks.
+     *
+     * @param array<int, mixed> $operators
+     */
+    private function firstAiraloOperatorName(array $operators): string
+    {
+        $firstOperator = $operators[0] ?? null;
+
+        return is_array($firstOperator) && is_string($firstOperator['name'] ?? null)
+            ? trim($firstOperator['name'])
+            : '';
+    }
+
+    /**
+     * @param array<int, mixed> $operators
+     */
+    private function firstAiraloOperatorNetworkType(array $operators): string
+    {
+        $firstOperator = $operators[0] ?? null;
+        if (!is_array($firstOperator)) {
+            return '4G';
+        }
+
+        $info = $firstOperator['info'] ?? null;
+        foreach (is_array($info) ? $info : [$info] as $value) {
+            if (!is_string($value)) {
+                continue;
+            }
+
+            if (preg_match('/\b(5G|LTE|4G|3G)\b/i', $value, $matches) === 1) {
+                return strtoupper($matches[1]);
+            }
+        }
+
+        return '4G';
     }
 
     private function classifyCatalogType(string $requestedType, string $slug): string
@@ -336,7 +539,7 @@ class AiraloPackagesService
             return $trimmed;
         }
 
-        return 'Réseau local';
+        return '';
     }
 
     /**
@@ -381,7 +584,9 @@ class AiraloPackagesService
         $sources = [
             $package['network_types'] ?? null,
             $package['types'] ?? null,
+            $package['info'] ?? null,
             $operator['types'] ?? null,
+            $operator['info'] ?? null,
         ];
 
         foreach ([$package['networks'] ?? null, $operator['networks'] ?? null] as $networks) {
@@ -435,6 +640,7 @@ class AiraloPackagesService
                     continue;
                 }
                 $sources[] = $nestedOperator['types'] ?? null;
+                $sources[] = $nestedOperator['info'] ?? null;
                 $sources[] = $nestedOperator['networks'] ?? null;
             }
         }
@@ -447,7 +653,11 @@ class AiraloPackagesService
                 if (!is_string($type) || trim($type) === '') {
                     continue;
                 }
-                $types[] = strtoupper(trim($type));
+                if (preg_match_all('/\b(5G|LTE|4G|3G)\b/i', $type, $matches) > 0) {
+                    foreach ($matches[1] as $match) {
+                        $types[] = strtoupper($match);
+                    }
+                }
             }
         }
 

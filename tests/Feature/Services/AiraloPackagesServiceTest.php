@@ -14,7 +14,7 @@ class AiraloPackagesServiceTest extends TestCase
     public function it_gets_packages_by_country_and_maps_them_to_dtos(): void
     {
         config(['cache.default' => 'array']);
-        Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
 
         $fakeClient = new FakeAiraloApiClientService([
             'data' => [
@@ -58,7 +58,7 @@ class AiraloPackagesServiceTest extends TestCase
     public function it_separates_global_packages_from_regional_ones(): void
     {
         config(['cache.default' => 'array']);
-        Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
 
         $fakeClient = new FakeAiraloApiClientService([
             'data' => [
@@ -109,7 +109,7 @@ class AiraloPackagesServiceTest extends TestCase
     public function it_normalizes_explicit_megabyte_amounts_without_overriding_explicit_gigabytes(): void
     {
         config(['cache.default' => 'array']);
-        Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
 
         $fakeClient = new FakeAiraloApiClientService([
             'data' => [
@@ -149,7 +149,7 @@ class AiraloPackagesServiceTest extends TestCase
     public function it_classifies_global_catalog_entries_by_slug_and_exposes_fair_usage_policy(): void
     {
         config(['cache.default' => 'array']);
-        Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
 
         $fakeClient = new FakeAiraloApiClientService([
             'data' => [
@@ -196,7 +196,7 @@ class AiraloPackagesServiceTest extends TestCase
     public function it_keeps_destinations_in_their_official_airalo_type_scope(): void
     {
         config(['cache.default' => 'array']);
-        Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
 
         $fakeClient = new FakeAiraloApiClientService([
             'data' => [
@@ -295,7 +295,7 @@ class AiraloPackagesServiceTest extends TestCase
     public function it_uses_cache_for_one_hour_to_avoid_redundant_api_calls(): void
     {
         config(['cache.default' => 'array']);
-        Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
 
         $fakeClient = new FakeAiraloApiClientService([
             'data' => [
@@ -325,7 +325,7 @@ class AiraloPackagesServiceTest extends TestCase
     public function it_localizes_iso_country_names_to_french_for_destinations(): void
     {
         config(['cache.default' => 'array']);
-        Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
 
         $service = new AiraloPackagesService(new FakeAiraloApiClientService([
             'data' => [[
@@ -354,7 +354,7 @@ class AiraloPackagesServiceTest extends TestCase
             'services.airalo.gnf_rate' => 9000,
             'services.airalo.gnf_margin_percent' => 10,
         ]);
-        Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
 
         $fakeClient = new FakeAiraloApiClientService([
             'data' => [
@@ -407,7 +407,7 @@ class AiraloPackagesServiceTest extends TestCase
     public function it_ignores_operator_titles_that_are_just_the_destination_product_name(): void
     {
         config(['cache.default' => 'array']);
-        Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
 
         $fakeClient = new FakeAiraloApiClientService([
             'data' => [
@@ -441,14 +441,14 @@ class AiraloPackagesServiceTest extends TestCase
         $packages = $service->getPackagesByCountry('GN');
 
         $this->assertCount(1, $packages);
-        $this->assertSame('Réseau local', $packages[0]->operatorName);
+        $this->assertSame('', $packages[0]->operatorName);
     }
 
     #[Test]
     public function it_prefers_coverage_network_brand_over_product_title_for_operator_name(): void
     {
         config(['cache.default' => 'array']);
-        Cache::forget('airalo:packages:catalog:v1:' . config('app.env'));
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
 
         $fakeClient = new FakeAiraloApiClientService([
             'data' => [
@@ -485,6 +485,270 @@ class AiraloPackagesServiceTest extends TestCase
         $this->assertCount(1, $packages);
         $this->assertSame('Orange', $packages[0]->operatorName);
         $this->assertSame(['4G'], $packages[0]->networkTypes);
+    }
+
+    #[Test]
+    public function it_prefers_explicit_operator_name_over_info_fallback(): void
+    {
+        config(['cache.default' => 'array']);
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
+
+        $fakeClient = new FakeAiraloApiClientService([
+            'data' => [[
+                'country_code' => 'FR',
+                'operators' => [[
+                    'name' => 'SFR',
+                    'info' => ['Operates on the Orange network in France.'],
+                    'packages' => [[
+                        'id' => 'fr-explicit',
+                        'amount' => 1,
+                        'day' => 7,
+                        'prices' => [['amount' => 5.0, 'currency' => 'EUR']],
+                    ]],
+                ]],
+            ]],
+        ]);
+
+        $package = (new AiraloPackagesService($fakeClient))->getPackagesByCountry('FR')[0];
+
+        $this->assertSame('SFR', $package->operatorName);
+        $this->assertSame(['SFR'], $package->operatorNames);
+    }
+
+    #[Test]
+    public function it_extracts_multiple_operator_names_from_info_without_country_codes(): void
+    {
+        config(['cache.default' => 'array']);
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
+
+        $fakeClient = new FakeAiraloApiClientService([
+            'data' => [[
+                'country_code' => 'US',
+                'operators' => [[
+                    'name' => null,
+                    'info' => [
+                        '5G Data-only eSIM.',
+                        'Operates on T-Mobile, Verizon, and U.S. Cellular networks in the United States of America.',
+                    ],
+                    'packages' => [[
+                        'id' => 'us-info-fallback',
+                        'amount' => 1,
+                        'day' => 7,
+                        'prices' => [['amount' => 5.0, 'currency' => 'USD']],
+                    ]],
+                ]],
+            ]],
+        ]);
+
+        $package = (new AiraloPackagesService($fakeClient))->getPackagesByCountry('US')[0];
+
+        $this->assertSame(['T-Mobile', 'Verizon', 'U.S. Cellular'], $package->operatorNames);
+        $this->assertSame('T-Mobile', $package->operatorName);
+        $this->assertSame(['5G'], $package->networkTypes);
+    }
+
+    #[Test]
+    public function it_maps_airalo_data_voice_and_text_services_with_quotas(): void
+    {
+        config(['cache.default' => 'array']);
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
+
+        $fakeClient = new FakeAiraloApiClientService([
+            'data' => [[
+                'country_code' => 'US',
+                'operators' => [[
+                    'name' => 'Example Mobile',
+                    'packages' => [[
+                        'id' => 'us-combo',
+                        'data' => '10 GB',
+                        'voice' => 75,
+                        'text' => 30,
+                        'amount' => 10,
+                        'day' => 365,
+                        'prices' => [['amount' => 50.0, 'currency' => 'USD']],
+                    ]],
+                ]],
+            ]],
+        ]);
+
+        $package = (new AiraloPackagesService($fakeClient))->getPackagesByCountry('US')[0];
+
+        $this->assertSame([
+            'data' => ['status' => 'included', 'quota' => '10 GB'],
+            'calls' => ['status' => 'included', 'quota' => '75 minutes'],
+            'sms' => ['status' => 'included', 'quota' => '30 SMS'],
+        ], $package->includedServices);
+    }
+
+    #[Test]
+    public function it_distinguishes_null_services_from_missing_service_fields(): void
+    {
+        config(['cache.default' => 'array']);
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
+
+        $fakeClient = new FakeAiraloApiClientService([
+            'data' => [
+                [
+                    'country_code' => 'FR',
+                    'operators' => [[
+                        'packages' => [[
+                            'id' => 'fr-data-only',
+                            'data' => '1 GB',
+                            'voice' => null,
+                            'text' => null,
+                            'amount' => 1,
+                            'day' => 7,
+                            'prices' => [['amount' => 5.0, 'currency' => 'EUR']],
+                        ]],
+                    ]],
+                ],
+                [
+                    'country_code' => 'DE',
+                    'operators' => [[
+                        'packages' => [[
+                            'id' => 'de-unknown-services',
+                            'amount' => 1,
+                            'day' => 7,
+                            'prices' => [['amount' => 5.0, 'currency' => 'EUR']],
+                        ]],
+                    ]],
+                ],
+            ],
+        ]);
+
+        $service = new AiraloPackagesService($fakeClient);
+        $dataOnly = $service->getPackagesByCountry('FR')[0];
+        $unknown = $service->getPackagesByCountry('DE')[0];
+
+        $this->assertSame('not_included', $dataOnly->includedServices['calls']['status']);
+        $this->assertSame('not_included', $dataOnly->includedServices['sms']['status']);
+        $this->assertSame('unspecified', $unknown->includedServices['calls']['status']);
+        $this->assertSame('unspecified', $unknown->includedServices['sms']['status']);
+    }
+
+    #[Test]
+    public function it_maps_boolean_service_values_without_numeric_labels(): void
+    {
+        config(['cache.default' => 'array']);
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
+
+        $fakeClient = new FakeAiraloApiClientService([
+            'data' => [[
+                'country_code' => 'JP',
+                'operators' => [[
+                    'packages' => [[
+                        'id' => 'jp-boolean-services',
+                        'data' => '500 MB',
+                        'voice' => true,
+                        'text' => false,
+                        'amount' => 0.5,
+                        'day' => 7,
+                        'prices' => [['amount' => 5.0, 'currency' => 'USD']],
+                    ]],
+                ]],
+            ]],
+        ]);
+
+        $package = (new AiraloPackagesService($fakeClient))->getPackagesByCountry('JP')[0];
+
+        $this->assertSame(['status' => 'included', 'quota' => null], $package->includedServices['calls']);
+        $this->assertSame(['status' => 'not_included', 'quota' => null], $package->includedServices['sms']);
+    }
+
+    #[Test]
+    public function it_does_not_invent_an_operator_when_only_country_data_exists(): void
+    {
+        config(['cache.default' => 'array']);
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
+
+        $fakeClient = new FakeAiraloApiClientService([
+            'data' => [[
+                'country_code' => 'GN',
+                'operator_name' => 'GN',
+                'operators' => [[
+                    'name' => null,
+                    'info' => ['4G Data-only eSIM.'],
+                    'packages' => [[
+                        'id' => 'gn-no-operator',
+                        'amount' => 1,
+                        'day' => 7,
+                        'prices' => [['amount' => 5.0, 'currency' => 'USD']],
+                    ]],
+                ]],
+            ]],
+        ]);
+
+        $package = (new AiraloPackagesService($fakeClient))->getPackagesByCountry('GN')[0];
+
+        $this->assertSame([], $package->operatorNames);
+        $this->assertSame('', $package->operatorName);
+        $this->assertSame(['4G'], $package->networkTypes);
+    }
+
+    #[Test]
+    public function it_maps_airalo_operator_info_to_network_types(): void
+    {
+        config(['cache.default' => 'array']);
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
+
+        $fakeClient = new FakeAiraloApiClientService([
+            'data' => [
+                [
+                    'country_code' => 'AF',
+                    'title' => 'Afghanistan',
+                    'operators' => [[
+                        'name' => 'Roshan',
+                        'info' => ['LTE'],
+                        'packages' => [[
+                            'id' => 'afghanistan-1gb-3days',
+                            'amount' => 1,
+                            'day' => 3,
+                            'prices' => [['amount' => 5.0, 'currency' => 'EUR']],
+                        ]],
+                    ]],
+                ],
+            ],
+        ]);
+
+        $packages = (new AiraloPackagesService($fakeClient))->getPackagesByCountry('AF');
+
+        $this->assertCount(1, $packages);
+        $this->assertSame('Roshan', $packages[0]->operatorName);
+        $this->assertSame(['LTE'], $packages[0]->networkTypes);
+        $this->assertSame('Roshan', $packages[0]->networkOperatorName);
+        $this->assertSame('LTE', $packages[0]->networkType);
+        $this->assertSame('Afghanistan', $packages[0]->countryName);
+    }
+
+    #[Test]
+    public function it_uses_strict_network_defaults_when_first_operator_has_no_info(): void
+    {
+        config(['cache.default' => 'array']);
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
+
+        $fakeClient = new FakeAiraloApiClientService([
+            'data' => [
+                [
+                    'country_code' => 'DE',
+                    'title' => 'Germany',
+                    'operators' => [[
+                        'networks' => [['type' => 'LTE']],
+                        'packages' => [[
+                            'id' => 'germany-1gb-3days',
+                            'amount' => 1,
+                            'day' => 3,
+                            'prices' => [['amount' => 5.0, 'currency' => 'EUR']],
+                        ]],
+                    ]],
+                ],
+            ],
+        ]);
+
+        $package = (new AiraloPackagesService($fakeClient))->getPackagesByCountry('DE')[0];
+
+        $this->assertSame('', $package->networkOperatorName);
+        $this->assertSame('4G', $package->networkType);
+        $this->assertSame(['LTE'], $package->networkTypes);
     }
 }
 

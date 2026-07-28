@@ -169,12 +169,54 @@ class AiraloOrdersService
 
         return array_values(array_map(function (mixed $package): array {
             $entry = $this->toArray($package);
-            if (($entry['is_unlimited'] ?? false) === true) {
-                unset($entry['remaining'], $entry['total'], $entry['amount']);
+            $isUnlimited = filter_var($entry['is_unlimited'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            $balance = [
+                'id' => (string) ($entry['id'] ?? $entry['package_id'] ?? ''),
+                'is_unlimited' => $isUnlimited,
+            ];
+
+            if (!$isUnlimited) {
+                $remaining = $this->normalizeDataMegabytes(
+                    $entry['remaining'] ?? $entry['remaining_data'] ?? $entry['data_remaining'] ?? null,
+                );
+                $total = $this->normalizeDataMegabytes(
+                    $entry['total'] ?? $entry['amount'] ?? $entry['data'] ?? null,
+                );
+
+                if ($remaining !== null) {
+                    $balance['remaining_mb'] = $remaining;
+                }
+                if ($total !== null) {
+                    $balance['total_mb'] = $total;
+                }
             }
 
-            return $entry;
+            return $balance;
         }, $packages));
+    }
+
+    private function normalizeDataMegabytes(mixed $value): ?float
+    {
+        if (is_int($value) || is_float($value)) {
+            return (float) $value;
+        }
+
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $normalized = strtolower(trim(str_replace(',', '.', $value)));
+        if (!preg_match('/^(\d+(?:\.\d+)?)\s*(kb|mb|gb|tb)?$/', $normalized, $matches)) {
+            return null;
+        }
+
+        $amount = (float) $matches[1];
+        return match ($matches[2] ?? 'mb') {
+            'kb' => $amount / 1024,
+            'gb' => $amount * 1024,
+            'tb' => $amount * 1024 * 1024,
+            default => $amount,
+        };
     }
 
     /**
