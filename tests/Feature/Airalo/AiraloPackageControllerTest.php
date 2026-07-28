@@ -214,4 +214,24 @@ class AiraloPackageControllerTest extends TestCase
             ->assertJsonPath('code', 'AIRALO_500')
             ->assertJsonStructure(['airalo_message']);
     }
+
+    #[Test]
+    public function it_hides_airalo_error_details_from_production_clients(): void
+    {
+        $this->app->instance('env', 'production');
+        $user = User::factory()->create();
+        $this->actingAs($user, 'api');
+
+        $this->mock(AiraloPackagesService::class, function ($mock): void {
+            $mock->shouldReceive('getPackagesByCountry')
+                ->once()
+                ->with('FR')
+                ->andThrow(new AiraloApiException(429, 'Private upstream detail'));
+        });
+
+        $this->getJson('/api/v1/airalo/packages/country/FR')
+            ->assertStatus(429)
+            ->assertJsonPath('message', 'Les forfaits eSIM sont indisponibles.')
+            ->assertJsonMissingPath('airalo_message');
+    }
 }

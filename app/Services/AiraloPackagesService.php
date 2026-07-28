@@ -375,8 +375,37 @@ class AiraloPackagesService
     private function extractIncludedServices(array $item): array
     {
         $services = $item['included_services'] ?? $item['services'] ?? null;
-        if (is_array($services) && isset($services['data'], $services['calls'], $services['sms'])) {
-            return $services;
+        if (is_array($services)) {
+            $normalized = [
+                'data' => $services['data'] ?? $this->normalizeService(
+                    array_key_exists('data', $item) ? $item['data'] : null,
+                    array_key_exists('data', $item),
+                    true,
+                    (string) ($item['data_unit'] ?? $item['dataUnit'] ?? 'GB'),
+                ),
+                'calls' => $services['calls'] ?? $this->normalizeService(
+                    $item['voice'] ?? $item['calls'] ?? $item['call'] ?? null,
+                    array_key_exists('voice', $item) || array_key_exists('calls', $item) || array_key_exists('call', $item),
+                    false,
+                    'minutes',
+                ),
+                'sms' => $services['sms'] ?? $this->normalizeService(
+                    $item['text'] ?? $item['sms'] ?? null,
+                    array_key_exists('text', $item) || array_key_exists('sms', $item),
+                    false,
+                    'SMS',
+                ),
+            ];
+
+            foreach ($services as $key => $value) {
+                if (!array_key_exists($key, $normalized)) {
+                    $normalized[$key] = is_array($value)
+                        ? $value
+                        : $this->normalizeService($value, true, false);
+                }
+            }
+
+            return $normalized;
         }
 
         return [
@@ -661,7 +690,51 @@ class AiraloPackagesService
             }
         }
 
+        foreach ([
+            $package['network_types'] ?? null,
+            $package['types'] ?? null,
+            $operator['types'] ?? null,
+            $package['networks'] ?? null,
+            $operator['networks'] ?? null,
+        ] as $source) {
+            $this->appendExplicitNetworkTypes($source, $types);
+        }
+
         return array_values(array_unique($types));
+    }
+
+    /**
+     * Preserve explicit Airalo technology labels that are newer than the
+     * currently recognized 3G/4G/LTE/5G set.
+     *
+     * @param array<int, string> $types
+     */
+    private function appendExplicitNetworkTypes(mixed $source, array &$types): void
+    {
+        if (is_array($source)) {
+            foreach ($source as $key => $value) {
+                if (in_array($key, ['type', 'types'], true)) {
+                    $this->appendExplicitNetworkTypes($value, $types);
+                } elseif (is_array($value)) {
+                    $this->appendExplicitNetworkTypes($value, $types);
+                } elseif (is_string($value)) {
+                    $this->appendExplicitNetworkTypes($value, $types);
+                }
+            }
+
+            return;
+        }
+
+        if (!is_string($source)) {
+            return;
+        }
+
+        foreach (preg_split('/\s*[,\/]\s*/', $source) ?: [] as $value) {
+            $normalized = trim($value);
+            if ($normalized !== '' && preg_match('/^[A-Za-z0-9][A-Za-z0-9 ._+\-]{0,31}$/', $normalized) === 1) {
+                $types[] = strtoupper($normalized);
+            }
+        }
     }
 
     private function is5g(array $item): bool

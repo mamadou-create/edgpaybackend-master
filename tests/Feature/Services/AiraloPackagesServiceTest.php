@@ -656,6 +656,44 @@ class AiraloPackagesServiceTest extends TestCase
     }
 
     #[Test]
+    public function it_preserves_unknown_services_and_network_technologies(): void
+    {
+        config(['cache.default' => 'array']);
+        Cache::forget('airalo:packages:catalog:v3:' . config('app.env'));
+
+        $service = new AiraloPackagesService(new FakeAiraloApiClientService([
+            'data' => [[
+                'country_code' => 'FR',
+                'operators' => [[
+                    'name' => 'Orange',
+                    'networks' => [['type' => '5G SA']],
+                    'packages' => [[
+                        'id' => 'fr-future-network',
+                        'amount' => 5,
+                        'day' => 30,
+                        'included_services' => [
+                            'data' => ['status' => 'included', 'quota' => '5 GB'],
+                            'calls' => ['status' => 'not_included', 'quota' => null],
+                            'sms' => ['status' => 'unspecified', 'quota' => null],
+                            'roaming' => ['status' => 'included', 'quota' => 'Europe'],
+                        ],
+                        'network_types' => ['5G SA'],
+                        'prices' => [['amount' => 10, 'currency' => 'EUR']],
+                    ]],
+                ]],
+            ]],
+        ]));
+
+        $package = $service->getPackagesByCountry('FR')[0];
+
+        $this->assertContains('5G SA', $package->networkTypes);
+        $this->assertSame(
+            ['status' => 'included', 'quota' => 'Europe'],
+            $package->includedServices['roaming'],
+        );
+    }
+
+    #[Test]
     public function it_does_not_invent_an_operator_when_only_country_data_exists(): void
     {
         config(['cache.default' => 'array']);

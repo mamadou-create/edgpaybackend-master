@@ -211,17 +211,18 @@ class AiraloOrderController extends Controller
                 'airalo_message' => $exception->airaloMessage(),
             ]);
 
-            return response()->json([
+            $payload = [
                 'success' => false,
                 'status' => $exception->statusCode(),
                 'message' => 'Les instructions d’installation ne sont pas disponibles pour le moment.',
-                'debug_message' => sprintf(
-                    'Airalo HTTP %d: %s',
-                    $exception->statusCode(),
-                    $exception->airaloMessage(),
-                ),
                 'code' => $exception->errorCode(),
-            ], $exception->statusCode());
+            ];
+
+            if (!app()->environment('production')) {
+                $payload['airalo_message'] = $exception->airaloMessage();
+            }
+
+            return response()->json($payload, $exception->statusCode());
         }
     }
 
@@ -252,12 +253,17 @@ class AiraloOrderController extends Controller
 
     private function airaloError(AiraloApiException $exception, string $message): JsonResponse
     {
-        return response()->json([
+        $payload = [
             'success' => false,
             'status' => $exception->statusCode(),
             'message' => $message,
-            'airalo_message' => $exception->airaloMessage(),
             'code' => $exception->errorCode(),
-        ], $exception->statusCode());
+        ];
+
+        if (!app()->environment('production')) {
+            $payload['airalo_message'] = $exception->airaloMessage();
+        }
+
+        return response()->json($payload, $exception->statusCode());
     }
 }

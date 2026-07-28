@@ -970,7 +970,7 @@ class AiraloOrderControllerTest extends TestCase
     }
 
     #[Test]
-    public function it_returns_a_safe_debug_message_when_instruction_retrieval_fails(): void
+    public function it_returns_a_safe_generic_error_when_instruction_retrieval_fails(): void
     {
         config([
             'services.airalo.base_url' => 'https://partners.airalo.test',
@@ -1005,7 +1005,49 @@ class AiraloOrderControllerTest extends TestCase
         $this->getJson('/api/v1/esim/orders/' . $order->id . '/instructions')
             ->assertStatus(404)
             ->assertJsonPath('success', false)
-            ->assertJsonPath('debug_message', 'Airalo HTTP 404: Order not found')
+            ->assertJsonMissingPath('debug_message')
+            ->assertJsonPath('airalo_message', 'Order not found')
+            ->assertJsonMissingPath('qrcode_url');
+    }
+
+    #[Test]
+    public function it_hides_airalo_diagnostics_in_production_when_instruction_retrieval_fails(): void
+    {
+        $this->app->instance('env', 'production');
+        config([
+            'services.airalo.base_url' => 'https://partners.airalo.test',
+            'services.airalo.client_id' => 'airalo-client-id',
+            'services.airalo.client_secret' => 'airalo-client-secret',
+            'cache.default' => 'array',
+        ]);
+        Cache::forget('airalo:oauth:access_token');
+
+        Http::fake([
+            'https://partners.airalo.test/v2/token' => Http::response([
+                'access_token' => 'airalo-token-xyz',
+                'expires_in' => 86400,
+            ]),
+            'https://partners.airalo.test/v2/orders/ord-production-1*' => Http::response([
+                'message' => 'Private upstream detail',
+            ], 404),
+        ]);
+
+        $user = User::factory()->create();
+        $order = AiraloOrder::query()->create([
+            'user_id' => $user->id,
+            'package_id' => 'pkg-production-1',
+            'airalo_order_id' => 'ord-production-1',
+            'quantity' => 1,
+            'currency' => 'USD',
+            'status' => 'completed',
+        ]);
+        $this->actingAs($user, 'api');
+
+        $this->getJson('/api/v1/esim/orders/' . $order->id . '/instructions')
+            ->assertStatus(404)
+            ->assertJsonPath('success', false)
+            ->assertJsonMissingPath('debug_message')
+            ->assertJsonMissingPath('airalo_message')
             ->assertJsonMissingPath('qrcode_url');
     }
 
