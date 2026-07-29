@@ -25,6 +25,8 @@ use App\Http\Controllers\API\PaymentOrchestrationController;
 use App\Http\Controllers\API\PaymentLinkController;
 use App\Http\Controllers\API\RoleController;
 use App\Http\Controllers\API\ReloadlyController;
+use App\Http\Controllers\Reloadly\ReloadlyGiftCardController;
+use App\Http\Controllers\Reloadly\ReloadlyUtilityController;
 use App\Http\Controllers\API\SmsController;
 use App\Http\Controllers\API\SystemSettingController;
 use App\Http\Controllers\API\TopupRequestController;
@@ -148,6 +150,26 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
         Route::get('/transactions/{transactionId}', [ReloadlyController::class, 'verifyTransaction']);
         Route::post('/airtime/topup', [ReloadlyController::class, 'topupAirtime'])
             ->middleware(['idempotency:reloadly-airtime,900', 'throttle:20,1']);
+    });
+
+    Route::prefix('reloadly/giftcards')->middleware('throttle:60,1')->group(function () {
+        Route::get('/products', [ReloadlyGiftCardController::class, 'listProducts']);
+        Route::get('/products/{productId}', [ReloadlyGiftCardController::class, 'getProduct'])->whereNumber('productId');
+        Route::post('/orders', [ReloadlyGiftCardController::class, 'order'])
+            ->middleware(['idempotency:reloadly-giftcard,900', 'throttle:20,1']);
+        Route::get('/orders/{transactionId}', [ReloadlyGiftCardController::class, 'orderStatus'])->whereNumber('transactionId');
+        Route::get('/orders/{transactionId}/cards', [ReloadlyGiftCardController::class, 'redeemCode'])->whereNumber('transactionId');
+        Route::get('/history', [ReloadlyGiftCardController::class, 'history']);
+    });
+
+    Route::prefix('reloadly/utilities')->middleware('throttle:60,1')->group(function () {
+        Route::get('/billers', [ReloadlyUtilityController::class, 'listBillers']);
+        Route::get('/billers/{billerId}', [ReloadlyUtilityController::class, 'getBiller'])->whereNumber('billerId');
+        Route::post('/pay', [ReloadlyUtilityController::class, 'pay'])
+            ->middleware(['idempotency:reloadly-utility,900', 'throttle:20,1']);
+        Route::get('/transactions/{transactionId}', [ReloadlyUtilityController::class, 'transactionStatus'])->whereNumber('transactionId');
+        Route::get('/balance', [ReloadlyUtilityController::class, 'balance']);
+        Route::get('/history', [ReloadlyUtilityController::class, 'history']);
     });
 
     Route::prefix('airalo/packages')->middleware('throttle:30,1')->group(function () {

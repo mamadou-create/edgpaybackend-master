@@ -56,6 +56,50 @@ class PaymentOrchestrationWorkflowTest extends TestCase
     }
 
     #[Test]
+    public function airtime_intent_defaults_to_gnf_and_rejects_other_currencies(): void
+    {
+        $user = $this->createAuthenticatedUser();
+        $this->actingAs($user, 'api');
+
+        $payload = [
+            'payment_provider' => 'ORANGE',
+            'payment_channel' => 'MOBILE_MONEY',
+            'recipient_phone' => '622123456',
+            'recipient_country_code' => 'GN',
+            'operator_id' => 201,
+            'amount' => 15000,
+        ];
+
+        $defaultCurrencyResponse = $this->withHeaders([
+            'X-Idempotency-Key' => 'intent-currency-default',
+        ])->postJson('/api/v1/purchase/airtime/intent', $payload);
+
+        $defaultCurrencyResponse
+            ->assertStatus(201)
+            ->assertJsonPath('success', true);
+
+        $paymentReference = $defaultCurrencyResponse->json('data.payment_reference');
+        $this->assertSame(
+            'GNF',
+            PaymentTransaction::query()
+                ->where('payment_reference', $paymentReference)
+                ->value('currency')
+        );
+
+        $invalidCurrencyResponse = $this->withHeaders([
+            'X-Idempotency-Key' => 'intent-currency-usd',
+        ])->postJson('/api/v1/purchase/airtime/intent', [
+            ...$payload,
+            'currency' => 'USD',
+        ]);
+
+        $invalidCurrencyResponse
+            ->assertStatus(422)
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('business_code', 'VALIDATION_ERROR');
+    }
+
+    #[Test]
     public function payment_webhook_with_invalid_signature_is_rejected_and_no_job_dispatched(): void
     {
         Queue::fake();

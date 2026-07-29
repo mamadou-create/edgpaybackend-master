@@ -55,11 +55,27 @@ return [
 
     'reloadly' => [
         'auth_base_url' => env('RELOADLY_AUTH_BASE_URL', 'https://auth.reloadly.com'),
+        'auth_url' => env('RELOADLY_AUTH_URL', 'https://auth.reloadly.com/oauth/token'),
         'topups_base_url' => env('RELOADLY_TOPUPS_BASE_URL', 'https://topups.reloadly.com'),
         'client_id' => env('RELOADLY_CLIENT_ID'),
         'client_secret' => env('RELOADLY_CLIENT_SECRET'),
+        'mode' => env('RELOADLY_MODE', 'sandbox'),
         'audience' => env('RELOADLY_AUDIENCE', 'https://topups.reloadly.com'),
         'timeout' => (int) env('RELOADLY_TIMEOUT', 15),
+        'products' => [
+            'airtime' => [
+                'sandbox' => env('RELOADLY_AIRTIME_SANDBOX_URL', 'https://topups-sandbox.reloadly.com'),
+                'live' => env('RELOADLY_AIRTIME_LIVE_URL', 'https://topups.reloadly.com'),
+            ],
+            'giftcards' => [
+                'sandbox' => env('RELOADLY_GIFTCARDS_SANDBOX_URL', 'https://giftcards-sandbox.reloadly.com'),
+                'live' => env('RELOADLY_GIFTCARDS_LIVE_URL', 'https://giftcards.reloadly.com'),
+            ],
+            'utilities' => [
+                'sandbox' => env('RELOADLY_UTILITIES_SANDBOX_URL', 'https://utilities-sandbox.reloadly.com'),
+                'live' => env('RELOADLY_UTILITIES_LIVE_URL', 'https://utilities.reloadly.com'),
+            ],
+        ],
     ],
 
     'airalo' => [

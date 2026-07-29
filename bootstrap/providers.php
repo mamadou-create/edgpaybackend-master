@@ -7,4 +7,5 @@ return [
     App\Providers\RepositoryServiceProvider::class,
     App\Providers\SchedulingServiceProvider::class,
     App\Providers\SmsServiceProvider::class,
+    App\Providers\ReloadlyServiceProvider::class,
 ];

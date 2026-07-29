@@ -3,12 +3,22 @@
 namespace App\Http\Requests\Payments;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Contracts\Validation\Validator;
+use Illuminate\Http\Exceptions\HttpResponseException;
+use App\Classes\ApiResponseClass;
 
 class CreateAirtimePurchaseIntentRequest extends FormRequest
 {
     public function authorize(): bool
     {
         return true;
+    }
+
+    protected function prepareForValidation(): void
+    {
+        $this->merge([
+            'currency' => strtoupper((string) ($this->input('currency') ?: 'GNF')),
+        ]);
     }
 
     public function rules(): array
@@ -22,8 +32,22 @@ class CreateAirtimePurchaseIntentRequest extends FormRequest
             'operator_id' => ['required', 'integer', 'min:1'],
             'operator_name' => ['sometimes', 'string', 'max:255'],
             'amount' => ['required', 'numeric', 'min:1'],
-            'currency' => ['sometimes', 'string', 'size:3'],
+            'currency' => ['required', 'string', 'size:3', 'in:GNF'],
             'expires_in_minutes' => ['sometimes', 'integer', 'min:5', 'max:60'],
         ];
+    }
+
+    public function messages(): array
+    {
+        return [
+            'currency.in' => 'La devise de recharge airtime doit être le GNF.',
+        ];
+    }
+
+    protected function failedValidation(Validator $validator): void
+    {
+        throw new HttpResponseException(
+            ApiResponseClass::validationError($validator->errors(), 'Erreur de validation')
+        );
     }
 }
