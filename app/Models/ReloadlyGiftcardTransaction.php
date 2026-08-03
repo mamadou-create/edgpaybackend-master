@@ -17,6 +17,9 @@ class ReloadlyGiftcardTransaction extends Model
         'transaction_date' => 'datetime',
         'unit_price' => 'decimal:4',
         'total_amount' => 'decimal:4',
+        'base_amount' => 'decimal:4',
+        'commission_amount' => 'decimal:4',
+        'wallet_amount' => 'integer',
     ];
 
     public function user()

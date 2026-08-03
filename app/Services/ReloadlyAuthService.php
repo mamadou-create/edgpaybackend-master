@@ -6,6 +6,7 @@ use App\Enums\ReloadlyProduct;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Http\Client\RequestException;
 
 class ReloadlyAuthService
 {
@@ -24,7 +25,15 @@ class ReloadlyAuthService
         $clientSecret = config('services.reloadly.client_secret');
 
         if (empty($clientId) || empty($clientSecret)) {
-            Log::error('Reloadly product credentials are missing.');
+            Log::error('Reloadly configuration is incomplete.', [
+                'product' => $product->value,
+                'mode' => config('services.reloadly.mode', 'sandbox'),
+                'client_id_present' => !empty($clientId),
+                'client_secret_present' => !empty($clientSecret),
+                'auth_url' => config('services.reloadly.auth_url'),
+                'product_base_url' => $product->baseUrl(),
+                'hint' => 'Vérifier RELOADLY_CLIENT_ID, RELOADLY_CLIENT_SECRET et le cache de configuration Laravel.',
+            ]);
             return '';
         }
 
@@ -42,6 +51,11 @@ class ReloadlyAuthService
                 Log::error('Reloadly product authentication failed.', [
                     'product' => $product->value,
                     'status' => $response->status(),
+                    'mode' => config('services.reloadly.mode', 'sandbox'),
+                    'auth_url' => config('services.reloadly.auth_url'),
+                    'product_base_url' => $product->baseUrl(),
+                    'response_message' => $response->json('message'),
+                    'response_error' => $response->json('error'),
                 ]);
                 return '';
             }
@@ -54,6 +68,17 @@ class ReloadlyAuthService
             }
 
             return $token;
+        } catch (RequestException $exception) {
+            Log::error('Reloadly product authentication HTTP error.', [
+                'product' => $product->value,
+                'mode' => config('services.reloadly.mode', 'sandbox'),
+                'status' => $exception->response?->status(),
+                'response_message' => $exception->response?->json('message'),
+                'response_error' => $exception->response?->json('error'),
+                'response_error_description' => $exception->response?->json('error_description'),
+            ]);
+
+            return '';
         } catch (\Throwable $exception) {
             Log::error('Reloadly product authentication error.', [
                 'product' => $product->value,

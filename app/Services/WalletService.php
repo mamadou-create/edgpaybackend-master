@@ -2294,6 +2294,62 @@ class WalletService
         });
     }
 
+    public function withdrawGiftCardPayment(int $amount, User $user, array $metadata = []): void
+    {
+        DB::transaction(function () use ($amount, $user) {
+            $wallet = $this->walletRepository->getByUserId($user->id);
+            if (!$wallet) {
+                throw new Exception("Wallet introuvable pour l'utilisateur");
+            }
+
+            $wallet = $this->walletRepository->findForUpdate($wallet->id);
+            $available = (int) $wallet->cash_available - (int) $wallet->blocked_amount;
+            if ($available < $amount) {
+                throw new Exception("Solde wallet insuffisant. Disponible: {$available}, Demandé: {$amount}");
+            }
+
+            $this->walletRepository->withdraw($wallet->id, $amount);
+            $user->solde_portefeuille = max(0, (int) $user->solde_portefeuille - $amount);
+            $user->save();
+            $this->transactionRepository->create([
+                'wallet_id' => $wallet->id,
+                'user_id' => $user->id,
+                'amount' => -$amount,
+                'type' => 'giftcard_purchase',
+                'reference' => uniqid('txn_giftcard_'),
+                'description' => "Achat carte cadeau de {$amount} {$wallet->currency}",
+                'metadata' => array_merge(
+                    ['provider' => 'reloadly_giftcard', 'wallet_amount' => $amount],
+                    $metadata,
+                ),
+            ]);
+        });
+    }
+
+    public function refundGiftCardPayment(int $amount, User $user): void
+    {
+        DB::transaction(function () use ($amount, $user) {
+            $wallet = $this->walletRepository->getByUserId($user->id);
+            if (!$wallet) {
+                throw new Exception("Wallet introuvable pour l'utilisateur");
+            }
+
+            $wallet = $this->walletRepository->findForUpdate($wallet->id);
+            $this->walletRepository->credit($wallet->id, $amount);
+            $user->solde_portefeuille = (int) $user->solde_portefeuille + $amount;
+            $user->save();
+            $this->transactionRepository->create([
+                'wallet_id' => $wallet->id,
+                'user_id' => $user->id,
+                'amount' => $amount,
+                'type' => 'giftcard_refund',
+                'reference' => uniqid('txn_giftcard_refund_'),
+                'description' => "Remboursement carte cadeau de {$amount} {$wallet->currency}",
+                'metadata' => ['provider' => 'reloadly_giftcard', 'wallet_amount' => $amount],
+            ]);
+        });
+    }
+
     /**
      * ✅ Remboursement DML selon le type d'utilisateur
      */

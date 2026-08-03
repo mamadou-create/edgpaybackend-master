@@ -34,6 +34,11 @@ class ExecuteReloadlyOrderJobTest extends TestCase
                 return ['success' => true, 'status' => 200, 'data' => ['access_token' => 'x']];
             }
 
+            public function getCountries(): array
+            {
+                return ['success' => true, 'status' => 200, 'data' => []];
+            }
+
             public function detectOperator(string $phone, string $countryCode = 'GN'): array
             {
                 return ['success' => true, 'status' => 200, 'data' => []];
@@ -104,6 +109,11 @@ class ExecuteReloadlyOrderJobTest extends TestCase
                 return ['success' => true, 'status' => 200, 'data' => ['access_token' => 'x']];
             }
 
+            public function getCountries(): array
+            {
+                return ['success' => true, 'status' => 200, 'data' => []];
+            }
+
             public function detectOperator(string $phone, string $countryCode = 'GN'): array
             {
                 return ['success' => true, 'status' => 200, 'data' => []];
@@ -168,6 +178,11 @@ class ExecuteReloadlyOrderJobTest extends TestCase
             public function authenticate(): array
             {
                 return ['success' => true, 'status' => 200, 'data' => ['access_token' => 'x']];
+            }
+
+            public function getCountries(): array
+            {
+                return ['success' => true, 'status' => 200, 'data' => []];
             }
 
             public function detectOperator(string $phone, string $countryCode = 'GN'): array
@@ -237,6 +252,11 @@ class ExecuteReloadlyOrderJobTest extends TestCase
             public function authenticate(): array
             {
                 return ['success' => true, 'status' => 200, 'data' => ['access_token' => 'x']];
+            }
+
+            public function getCountries(): array
+            {
+                return ['success' => true, 'status' => 200, 'data' => []];
             }
 
             public function detectOperator(string $phone, string $countryCode = 'GN'): array

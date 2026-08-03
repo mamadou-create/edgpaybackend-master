@@ -22,4 +22,9 @@ class ReloadlyUtilityTransaction extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    public function paymentIntent()
+    {
+        return $this->hasOne(PaymentIntent::class, 'provider_reference', 'reference_id');
+    }
 }

@@ -22,3 +22,8 @@ Schedule::command('credit:detecter-retards')->dailyAt('01:00');
 
 // Recalcul scores : chaque jour à 02:00
 Schedule::command('credit:recalcul-scores')->dailyAt('02:00');
+
+Schedule::command('utilities:reconcile')
+    ->everyFiveMinutes()
+    ->withoutOverlapping(10)
+    ->onOneServer();

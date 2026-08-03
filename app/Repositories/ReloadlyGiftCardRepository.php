@@ -2,7 +2,6 @@
 
 namespace App\Repositories;
 
-use App\Enums\CommissionEnum;
 use App\Enums\ReloadlyProduct;
 use App\Models\User;
 use App\Models\ReloadlyGiftcardTransaction;
@@ -66,16 +65,28 @@ class ReloadlyGiftCardRepository implements ReloadlyGiftCardRepositoryInterface
         if (!is_numeric($data['unitPrice'])) return $this->error('unitPrice invalide', 400);
         $quantity = (int) ($data['quantity'] ?? 1);
         $unitPrice = (float) $data['unitPrice'];
-        $totalAmount = $unitPrice * $quantity;
+        $baseAmount = (float) ($data['baseAmount'] ?? ($unitPrice * $quantity));
+        $commissionAmount = (float) ($data['commissionAmount'] ?? 0);
+        $walletAmount = (int) ($data['walletAmount'] ?? ceil($baseAmount + $commissionAmount));
+        $totalAmount = $walletAmount;
         $idempotencyKey = sha1($data['productId'] . $unitPrice . $quantity . ($data['recipientEmail'] ?? '') . now()->format('YmdHi'));
         $transaction = ReloadlyGiftcardTransaction::firstOrCreate(['idempotency_key' => $idempotencyKey], [
             'user_id' => $this->user->id, 'product_id' => $data['productId'], 'quantity' => $quantity,
-            'unit_price' => $unitPrice, 'total_amount' => $totalAmount, 'sender_name' => $data['senderName'] ?? null,
+            'unit_price' => $unitPrice, 'base_amount' => $baseAmount, 'commission_amount' => $commissionAmount,
+            'wallet_amount' => $walletAmount, 'wallet_currency' => $data['walletCurrency'] ?? 'GNF',
+            'total_amount' => $totalAmount, 'sender_name' => $data['senderName'] ?? null,
             'recipient_email' => $data['recipientEmail'] ?? null, 'recipient_phone' => $data['recipientPhoneDetails']['number'] ?? null,
             'custom_identifier' => $data['customIdentifier'] ?? null, 'api_status' => 'PENDING',
         ]);
         if ($transaction->api_status !== 'PENDING') return $this->error('Transaction déjà traitée', 409);
-        try { $this->walletService->withdrawDmlPayment($totalAmount, CommissionEnum::EDG, $this->user); }
+        try {
+            $this->walletService->withdrawGiftCardPayment($totalAmount, $this->user, [
+                'base_amount' => $baseAmount,
+                'commission_amount' => $commissionAmount,
+                'total_user_price' => $baseAmount + $commissionAmount,
+                'wallet_currency' => $data['walletCurrency'] ?? 'GNF',
+            ]);
+        }
         catch (\Throwable $e) { $transaction->update(['api_status' => 'FAILED', 'error_message' => $e->getMessage()]); return $this->error($e->getMessage(), 400); }
         $token = $this->authService->getToken($this->product);
         if (empty($token)) { $this->refundTransaction($transaction, $totalAmount, 'Authentification Reloadly impossible'); return $this->error('Authentification Reloadly impossible', 401); }
@@ -115,7 +126,7 @@ class ReloadlyGiftCardRepository implements ReloadlyGiftCardRepositoryInterface
     { try { return ['success' => true, 'data' => ReloadlyGiftcardTransaction::where('user_id', $userId)->orderBy('created_at', 'desc')->paginate($perPage)]; } catch (\Exception $e) { Log::error('Get Reloadly GiftCard Transaction History Error: ' . $e->getMessage()); return $this->error($e->getMessage(), 500); } }
 
     private function refundTransaction(ReloadlyGiftcardTransaction $transaction, float $amount, string $reason = ''): void
-    { try { $this->walletService->refundPayment((int) $amount, CommissionEnum::EDG, $this->user); $transaction->update(['api_status' => 'FAILED', 'error_message' => $reason ?: 'Remboursement effectué']); } catch (\Exception $e) { Log::critical('Échec remboursement GiftCard', ['transaction_id' => $transaction->id, 'error' => $e->getMessage()]); } }
+    { try { $this->walletService->refundGiftCardPayment((int) $amount, $this->user); $transaction->update(['api_status' => 'FAILED', 'error_message' => $reason ?: 'Remboursement effectué']); } catch (\Exception $e) { Log::critical('Échec remboursement GiftCard', ['transaction_id' => $transaction->id, 'error' => $e->getMessage()]); } }
 
     private function error(string $message, int $status = 400): array
     { return ['success' => false, 'error' => $message, 'status' => $status]; }

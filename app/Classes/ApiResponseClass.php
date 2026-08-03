@@ -101,6 +101,34 @@ class ApiResponseClass
         );
     }
 
+    public static function sendPaginatedResponse($result, string $message = "Succès", int $code = JsonResponse::HTTP_OK): JsonResponse
+    {
+        $items = method_exists($result, 'items') ? $result->items() : $result;
+        $response = [
+            'success' => true,
+            'status_code' => $code,
+            'message' => $message,
+            'data' => $items,
+            'correlation_id' => self::resolveCorrelationId(),
+        ];
+
+        if (method_exists($result, 'currentPage')) {
+            $response['meta'] = [
+                'current_page' => $result->currentPage(),
+                'last_page' => $result->lastPage(),
+                'per_page' => $result->perPage(),
+                'total' => $result->total(),
+            ];
+        }
+
+        return response()->json(
+            $response,
+            $code,
+            [],
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+        );
+    }
+
     /**
      * Réponse d'erreur générique
      */

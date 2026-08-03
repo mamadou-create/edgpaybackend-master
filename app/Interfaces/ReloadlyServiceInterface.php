@@ -6,6 +6,8 @@ interface ReloadlyServiceInterface
 {
     public function authenticate(): array;
 
+    public function getCountries(): array;
+
     public function detectOperator(string $phone, string $countryCode = 'GN'): array;
 
     public function getDataPlans(int $operatorId, ?string $recipientPhone = null): array;

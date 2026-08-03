@@ -272,6 +272,11 @@ class User extends Authenticatable implements JWTSubject
         return $this->hasOne(Wallet::class);
     }
 
+    public function wallets()
+    {
+        return $this->hasMany(Wallet::class);
+    }
+
     // Synchroniser le solde avec le wallet
     public function syncWalletBalance(): void
     {

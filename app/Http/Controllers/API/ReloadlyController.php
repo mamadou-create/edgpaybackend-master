@@ -33,6 +33,22 @@ class ReloadlyController extends Controller
         return ApiResponseClass::sendResponse($result['data'] ?? [], 'Authentification Reloadly OK');
     }
 
+    public function countries(): JsonResponse
+    {
+        $result = $this->reloadlyService->getCountries();
+
+        if (!$result['success']) {
+            return ApiResponseClass::sendError(
+                $result['message'] ?? 'Erreur lors de la récupération des pays Reloadly',
+                $result['data'] ?? null,
+                $result['status'] ?? 500,
+                $result['business_code'] ?? 'COUNTRIES_FETCH_FAILED'
+            );
+        }
+
+        return ApiResponseClass::sendResponse($result['data'] ?? [], 'Pays Reloadly récupérés');
+    }
+
     public function detectOperator(DetectOperatorRequest $request): JsonResponse
     {
         $result = $this->reloadlyService->detectOperator(

@@ -32,6 +32,16 @@ class ReloadlyService implements ReloadlyServiceInterface
     public function authenticate(): array
     {
         if ($this->authBaseUrl === '' || $this->clientId === '' || $this->clientSecret === '') {
+            Log::error('Reloadly configuration is incomplete.', [
+                'product' => 'airtime',
+                'mode' => config('services.reloadly.mode', 'sandbox'),
+                'auth_base_url_present' => $this->authBaseUrl !== '',
+                'client_id_present' => $this->clientId !== '',
+                'client_secret_present' => $this->clientSecret !== '',
+                'auth_base_url' => $this->authBaseUrl,
+                'audience' => $this->audience,
+                'hint' => 'Vérifier RELOADLY_AUTH_BASE_URL, RELOADLY_CLIENT_ID, RELOADLY_CLIENT_SECRET et le cache de configuration Laravel.',
+            ]);
             return $this->errorResult(500, 'RELOADLY_NOT_CONFIGURED', 'Configuration Reloadly incomplète.');
         }
 
@@ -93,6 +103,21 @@ class ReloadlyService implements ReloadlyServiceInterface
                 'exception' => $e->getMessage(),
             ]);
         }
+    }
+
+    public function getCountries(): array
+    {
+        $result = $this->authorizedGet('/countries');
+        if (!$result['success']) {
+            return $result;
+        }
+
+        return [
+            'success' => true,
+            'status' => 200,
+            'message' => 'Pays Reloadly récupérés avec succès',
+            'data' => $result['data'],
+        ];
     }
 
     public function detectOperator(string $phone, string $countryCode = 'GN'): array

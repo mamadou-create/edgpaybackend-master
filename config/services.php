@@ -70,6 +70,10 @@ return [
             'giftcards' => [
                 'sandbox' => env('RELOADLY_GIFTCARDS_SANDBOX_URL', 'https://giftcards-sandbox.reloadly.com'),
                 'live' => env('RELOADLY_GIFTCARDS_LIVE_URL', 'https://giftcards.reloadly.com'),
+                'margin_percent' => (float) env('RELOADLY_GIFTCARD_MARGIN_PERCENT', 0),
+                'margin_fixed' => (float) env('RELOADLY_GIFTCARD_MARGIN_FIXED', 0),
+                'usd_to_gnf' => (float) env('RELOADLY_GIFTCARD_USD_TO_GNF', 1),
+                'wallet_currency' => env('RELOADLY_GIFTCARD_WALLET_CURRENCY', 'GNF'),
             ],
             'utilities' => [
                 'sandbox' => env('RELOADLY_UTILITIES_SANDBOX_URL', 'https://utilities-sandbox.reloadly.com'),

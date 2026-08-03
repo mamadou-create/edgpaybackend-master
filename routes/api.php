@@ -11,6 +11,7 @@ use App\Http\Controllers\API\RiskDashboardController;
 use App\Http\Controllers\API\ApiClientController;
 use App\Http\Controllers\API\AuthController;
 use App\Http\Controllers\API\CommissionController;
+use App\Http\Controllers\API\CurrencyConversionRateController;
 use App\Http\Controllers\API\FinancialReportController;
 use App\Http\Controllers\API\CompteurController;
 use App\Http\Controllers\API\UserController;
@@ -25,6 +26,7 @@ use App\Http\Controllers\API\PaymentOrchestrationController;
 use App\Http\Controllers\API\PaymentLinkController;
 use App\Http\Controllers\API\RoleController;
 use App\Http\Controllers\API\ReloadlyController;
+use App\Http\Controllers\Reloadly\ReloadlyController as ReloadlyAdvancedController;
 use App\Http\Controllers\Reloadly\ReloadlyGiftCardController;
 use App\Http\Controllers\Reloadly\ReloadlyUtilityController;
 use App\Http\Controllers\API\SmsController;
@@ -142,7 +144,24 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
     });
 
     Route::prefix('reloadly')->middleware('throttle:60,1')->group(function () {
+        Route::get('/operators/search', [ReloadlyAdvancedController::class, 'searchOperator']);
+        Route::get('/operators/countries/{countryCode}', [ReloadlyAdvancedController::class, 'operatorsByCountry']);
+        Route::post('/topup', [ReloadlyAdvancedController::class, 'topup']);
+        Route::get('/operators/{operatorId}/products', [ReloadlyAdvancedController::class, 'operatorProducts'])
+            ->whereNumber('operatorId');
+        Route::post('/buy-data', [ReloadlyAdvancedController::class, 'buyDataBundle']);
+        Route::post('/wallet/credit', [ReloadlyAdvancedController::class, 'creditWallet']);
+        Route::get('/balance', [ReloadlyAdvancedController::class, 'balance']);
+        Route::get('/history', [ReloadlyAdvancedController::class, 'history']);
+        Route::get('/gift-cards', [ReloadlyGiftCardController::class, 'listProducts']);
+        Route::get('/operators/{operatorId}/bundles', [ReloadlyAdvancedController::class, 'getDataPlans'])
+            ->whereNumber('operatorId');
+        Route::get('/promotions/{operatorId}', [ReloadlyAdvancedController::class, 'getPromotions'])
+            ->whereNumber('operatorId');
+        Route::get('/commissions', [ReloadlyAdvancedController::class, 'getCommissions']);
+        Route::get('/transactions/{transactionId}/verify', [ReloadlyAdvancedController::class, 'verifyTransaction']);
         Route::post('/auth', [ReloadlyController::class, 'authenticate']);
+        Route::get('/countries', [ReloadlyController::class, 'countries']);
         Route::post('/operators/detect', [ReloadlyController::class, 'detectOperator']);
         Route::get('/data/plans', [ReloadlyController::class, 'dataPlans']);
         Route::get('/promotions', [ReloadlyController::class, 'promotions']);
@@ -155,6 +174,7 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
     Route::prefix('reloadly/giftcards')->middleware('throttle:60,1')->group(function () {
         Route::get('/products', [ReloadlyGiftCardController::class, 'listProducts']);
         Route::get('/products/{productId}', [ReloadlyGiftCardController::class, 'getProduct'])->whereNumber('productId');
+        Route::get('/orders/quote', [ReloadlyGiftCardController::class, 'quote']);
         Route::post('/orders', [ReloadlyGiftCardController::class, 'order'])
             ->middleware(['idempotency:reloadly-giftcard,900', 'throttle:20,1']);
         Route::get('/orders/{transactionId}', [ReloadlyGiftCardController::class, 'orderStatus'])->whereNumber('transactionId');
@@ -164,12 +184,25 @@ Route::prefix('v1')->middleware('auth:api')->group(function () {
 
     Route::prefix('reloadly/utilities')->middleware('throttle:60,1')->group(function () {
         Route::get('/billers', [ReloadlyUtilityController::class, 'listBillers']);
-        Route::get('/billers/{billerId}', [ReloadlyUtilityController::class, 'getBiller'])->whereNumber('billerId');
+        Route::get('/payment-options', [ReloadlyUtilityController::class, 'paymentOptions']);
         Route::post('/pay', [ReloadlyUtilityController::class, 'pay'])
             ->middleware(['idempotency:reloadly-utility,900', 'throttle:20,1']);
         Route::get('/transactions/{transactionId}', [ReloadlyUtilityController::class, 'transactionStatus'])->whereNumber('transactionId');
         Route::get('/balance', [ReloadlyUtilityController::class, 'balance']);
         Route::get('/history', [ReloadlyUtilityController::class, 'history']);
+    });
+
+    Route::prefix('admin/currency-conversion-rates')->middleware('throttle:30,1')->group(function () {
+        Route::get('/', [CurrencyConversionRateController::class, 'index']);
+        Route::post('/', [CurrencyConversionRateController::class, 'store'])
+            ->middleware('idempotency:currency-rate-create,900');
+        Route::post('/{rate}/approve', [CurrencyConversionRateController::class, 'approve'])
+            ->middleware('idempotency:currency-rate-approve,900');
+        Route::post('/{rate}/activate', [CurrencyConversionRateController::class, 'activate'])
+            ->middleware('idempotency:currency-rate-activate,900');
+        Route::post('/{rate}/deactivate', [CurrencyConversionRateController::class, 'deactivate'])
+            ->middleware('idempotency:currency-rate-deactivate,900');
+        Route::get('/{rate}/history', [CurrencyConversionRateController::class, 'history']);
     });
 
     Route::prefix('airalo/packages')->middleware('throttle:30,1')->group(function () {
